@@ -1,2 +1,0 @@
-2.01s - timed out during opening handshake
-params: ['uri', 'origin', 'extensions', 'subprotocols', 'compression', 'additional_headers', 'user_agent_header', 'proxy', 'process_exception', 'open_timeout', 'ping_interval', 'ping_timeout', 'close_timeout', 'reconnect_delays', 'max_size', 'max_queue', 'write_limit', 'logger', 'create_connection', 'kwargs']
