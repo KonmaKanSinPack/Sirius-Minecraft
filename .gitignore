@@ -25,3 +25,8 @@ Thumbs.db
 
 # Temp
 *.ps1.tmp
+
+# Test client (HMCL instance, not part of source)
+.minecraft/
+.hmcl/
+HMCL-*.exe
