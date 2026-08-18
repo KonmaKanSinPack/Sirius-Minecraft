@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "TaskFinishedStatus": {
+      "description": "NEKO task_finished 五态。spec §8.2。superseded 为中性状态，不算失败。",
+      "enum": [
+        "ok",
+        "failed",
+        "interrupted",
+        "superseded",
+        "timeout"
+      ],
+      "title": "TaskFinishedStatus",
+      "type": "string"
+    }
+  },
+  "description": "NEKO 兼容：Mod → 后端任务完成帧。task_id 必须原样回传（否则 out-of-order 完成会错误归属）。spec §8.2。",
+  "properties": {
+    "type": {
+      "const": "task_finished",
+      "default": "task_finished",
+      "title": "Type",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/TaskFinishedStatus"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "task_id",
+    "text"
+  ],
+  "title": "TaskFinishedFrame",
+  "type": "object"
+}

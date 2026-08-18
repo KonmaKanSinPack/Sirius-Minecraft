@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Capability": {
+      "description": "单项能力描述（capabilities/list 响应成员）。spec §8.2。",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "input_schema": {
+          "additionalProperties": true,
+          "title": "Input Schema",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "Capability",
+      "type": "object"
+    },
+    "ToolCallError": {
+      "description": "工具调用错误对象。spec §8.2。",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "integer"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "data": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ToolCallError",
+      "type": "object"
+    }
+  },
+  "description": "capabilities/list 响应：能力清单 + 协议版本。spec §8.2。",
+  "properties": {
+    "type": {
+      "const": "response",
+      "default": "response",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "result": {
+      "items": {
+        "$ref": "#/$defs/Capability"
+      },
+      "title": "Result",
+      "type": "array"
+    },
+    "protocol_version": {
+      "title": "Protocol Version",
+      "type": "string"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolCallError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "id",
+    "result",
+    "protocol_version"
+  ],
+  "title": "CapabilitiesListResponse",
+  "type": "object"
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "requestDecision({ question, options, default, timeout }) — 默认 30s 超时后按 default 继续。spec §4.2。",
+  "properties": {
+    "type": {
+      "const": "decision",
+      "default": "decision",
+      "title": "Type",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "question": {
+      "title": "Question",
+      "type": "string"
+    },
+    "options": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Options",
+      "type": "array"
+    },
+    "default": {
+      "type": "string",
+      "title": "Default"
+    },
+    "timeout": {
+      "default": 30,
+      "exclusiveMinimum": 0,
+      "title": "Timeout",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "task_id",
+    "question",
+    "options",
+    "default"
+  ],
+  "title": "RequestDecision",
+  "type": "object"
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "reportDone({ result, evidence })。spec §4.2。",
+  "properties": {
+    "type": {
+      "const": "done",
+      "default": "done",
+      "title": "Type",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "result": {
+      "title": "Result",
+      "type": "string"
+    },
+    "evidence": {
+      "title": "Evidence",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "result",
+    "evidence"
+  ],
+  "title": "ReportDone",
+  "type": "object"
+}

@@ -1,0 +1,69 @@
+{
+  "protocol_version": "1.0",
+  "exported_at": "2026-08-18T08:54:27Z",
+  "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+  "generator": "sirius_brain.protocol.export_schema",
+  "categories": {
+    "frames": {
+      "ToolCallRequest": "frames/ToolCallRequest.json",
+      "ToolCallResponse": "frames/ToolCallResponse.json",
+      "ToolCallError": "frames/ToolCallError.json",
+      "NotificationFrame": "frames/NotificationFrame.json",
+      "Capability": "frames/Capability.json",
+      "CapabilitiesListRequest": "frames/CapabilitiesListRequest.json",
+      "CapabilitiesListResponse": "frames/CapabilitiesListResponse.json",
+      "TaskFrame": "frames/TaskFrame.json",
+      "TaskFinishedFrame": "frames/TaskFinishedFrame.json"
+    },
+    "tools": {
+      "screenshot": "tools/screenshot.json",
+      "look": "tools/look.json",
+      "lookAt": "tools/lookAt.json",
+      "getGuiState": "tools/getGuiState.json",
+      "world.query": "tools/world.query.json",
+      "getStats": "tools/getStats.json",
+      "input.mouseMove": "tools/input.mouseMove.json",
+      "input.click": "tools/input.click.json",
+      "input.key": "tools/input.key.json",
+      "input.text": "tools/input.text.json",
+      "events.subscribe": "tools/events.subscribe.json",
+      "events.watch": "tools/events.watch.json"
+    },
+    "tasks": {
+      "TaskCard": "tasks/TaskCard.json",
+      "ReportDone": "tasks/ReportDone.json",
+      "ReportBlocked": "tasks/ReportBlocked.json",
+      "RequestDecision": "tasks/RequestDecision.json",
+      "ReportProgress": "tasks/ReportProgress.json"
+    }
+  },
+  "files": [
+    "frames/CapabilitiesListRequest.json",
+    "frames/CapabilitiesListResponse.json",
+    "frames/Capability.json",
+    "frames/NotificationFrame.json",
+    "frames/TaskFinishedFrame.json",
+    "frames/TaskFrame.json",
+    "frames/ToolCallError.json",
+    "frames/ToolCallRequest.json",
+    "frames/ToolCallResponse.json",
+    "tasks/ReportBlocked.json",
+    "tasks/ReportDone.json",
+    "tasks/ReportProgress.json",
+    "tasks/RequestDecision.json",
+    "tasks/TaskCard.json",
+    "tools/events.subscribe.json",
+    "tools/events.watch.json",
+    "tools/getGuiState.json",
+    "tools/getStats.json",
+    "tools/input.click.json",
+    "tools/input.key.json",
+    "tools/input.mouseMove.json",
+    "tools/input.text.json",
+    "tools/look.json",
+    "tools/lookAt.json",
+    "tools/screenshot.json",
+    "tools/world.query.json"
+  ],
+  "notes": "每个文件自包含（$defs 内联、$ref 均为 #/ 片段），Java 侧可单文件加载；tools/<method>.json 描述该工具 ToolCallRequest.params 的契约；NEKO 兼容帧见 frames/TaskFrame.json 与 frames/TaskFinishedFrame.json"
+}

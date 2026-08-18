@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ToolCallError": {
+      "description": "工具调用错误对象。spec §8.2。",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "integer"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "data": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ToolCallError",
+      "type": "object"
+    }
+  },
+  "description": "Mod → 后端工具调用响应帧（与请求 id 配对）。spec §8.2。",
+  "properties": {
+    "type": {
+      "const": "response",
+      "default": "response",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "result": {
+      "anyOf": [
+        {},
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolCallError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ToolCallResponse",
+  "type": "object"
+}

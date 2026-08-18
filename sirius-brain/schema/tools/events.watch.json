@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "events.watch({ stat, condition, hysteresis, cooldown_ms })。spec §8.2。",
+  "properties": {
+    "stat": {
+      "title": "Stat",
+      "type": "string"
+    },
+    "condition": {
+      "title": "Condition",
+      "type": "string"
+    },
+    "hysteresis": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Hysteresis"
+    },
+    "cooldown_ms": {
+      "minimum": 0,
+      "title": "Cooldown Ms",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "stat",
+    "condition",
+    "cooldown_ms"
+  ],
+  "title": "EventsWatchParams",
+  "type": "object"
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "工具调用错误对象。spec §8.2。",
+  "properties": {
+    "code": {
+      "title": "Code",
+      "type": "integer"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "data": {
+      "anyOf": [
+        {},
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Data"
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "title": "ToolCallError",
+  "type": "object"
+}

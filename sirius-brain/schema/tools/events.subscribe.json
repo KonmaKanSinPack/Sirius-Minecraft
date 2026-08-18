@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "EventLevel": {
+      "description": "事件分级。spec §8.2：CRITICAL→反射层立即或 L1 中断；WARNING→排队；INFO→缓冲。",
+      "enum": [
+        "CRITICAL",
+        "WARNING",
+        "INFO"
+      ],
+      "title": "EventLevel",
+      "type": "string"
+    }
+  },
+  "description": "events.subscribe({ types: [...], min_level })。spec §8.2。",
+  "properties": {
+    "types": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Types",
+      "type": "array"
+    },
+    "min_level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventLevel"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "types"
+  ],
+  "title": "EventsSubscribeParams",
+  "type": "object"
+}

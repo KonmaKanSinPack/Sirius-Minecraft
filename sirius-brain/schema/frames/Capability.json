@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "单项能力描述（capabilities/list 响应成员）。spec §8.2。",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "string"
+    },
+    "input_schema": {
+      "additionalProperties": true,
+      "title": "Input Schema",
+      "type": "object"
+    }
+  },
+  "required": [
+    "name",
+    "version"
+  ],
+  "title": "Capability",
+  "type": "object"
+}

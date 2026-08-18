@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "input.click({ button, count })。spec §8.2。",
+  "properties": {
+    "button": {
+      "title": "Button",
+      "type": "integer"
+    },
+    "count": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "button"
+  ],
+  "title": "ClickParams",
+  "type": "object"
+}

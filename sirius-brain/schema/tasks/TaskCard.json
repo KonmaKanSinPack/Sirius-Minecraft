@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "InterruptPolicy": {
+      "description": "中断策略。spec §8.4：取消 PAUSE，保留 CANCEL/DEFLECT。",
+      "enum": [
+        "cancel",
+        "deflect"
+      ],
+      "title": "InterruptPolicy",
+      "type": "string"
+    }
+  },
+  "description": "任务卡（规划器 → 执行器）。spec §5。",
+  "properties": {
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "goal": {
+      "title": "Goal",
+      "type": "string"
+    },
+    "success_criteria": {
+      "description": "必须可机检，如 'inventory.diamond >= 3'",
+      "title": "Success Criteria",
+      "type": "string"
+    },
+    "constraints": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Constraints",
+      "type": "array"
+    },
+    "tools_allowlist": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tools Allowlist",
+      "type": "array"
+    },
+    "interrupt_policy": {
+      "$ref": "#/$defs/InterruptPolicy"
+    },
+    "timeout_mins": {
+      "exclusiveMinimum": 0,
+      "title": "Timeout Mins",
+      "type": "integer"
+    },
+    "context": {
+      "description": "相关记忆/知识/skill 检索 top-3 注入",
+      "items": {
+        "type": "string"
+      },
+      "title": "Context",
+      "type": "array"
+    }
+  },
+  "required": [
+    "task_id",
+    "goal",
+    "success_criteria",
+    "interrupt_policy",
+    "timeout_mins"
+  ],
+  "title": "TaskCard",
+  "type": "object"
+}

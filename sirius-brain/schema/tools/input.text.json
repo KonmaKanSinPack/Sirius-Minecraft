@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "input.text({ string })。spec §8.2。",
+  "properties": {
+    "string": {
+      "title": "String",
+      "type": "string"
+    }
+  },
+  "required": [
+    "string"
+  ],
+  "title": "TextParams",
+  "type": "object"
+}

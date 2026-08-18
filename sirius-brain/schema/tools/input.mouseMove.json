@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "input.mouseMove({ x, y })。spec §8.2。",
+  "properties": {
+    "x": {
+      "title": "X",
+      "type": "number"
+    },
+    "y": {
+      "title": "Y",
+      "type": "number"
+    }
+  },
+  "required": [
+    "x",
+    "y"
+  ],
+  "title": "MouseMoveParams",
+  "type": "object"
+}

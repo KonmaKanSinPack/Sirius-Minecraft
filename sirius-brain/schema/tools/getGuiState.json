@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "getGuiState() — widget 树：standard（结构化）/ fallback（矩形+贴图名）。spec §8.2。",
+  "properties": {},
+  "title": "GetGuiStateParams",
+  "type": "object"
+}

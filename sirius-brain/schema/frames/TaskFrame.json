@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "NEKO 兼容：后端 → Mod 任务帧 {type:\"task\", task, task_id}。spec §8.2。",
+  "properties": {
+    "type": {
+      "const": "task",
+      "default": "task",
+      "title": "Type",
+      "type": "string"
+    },
+    "task": {
+      "title": "Task",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task",
+    "task_id"
+  ],
+  "title": "TaskFrame",
+  "type": "object"
+}

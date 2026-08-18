@@ -11,7 +11,8 @@ Sirius（天狼星）Minecraft AI 陪玩项目的 Python 后端大脑。
 sirius_brain/
   protocol/        # 协议帧 pydantic 模型（信封 / 工具参数 / NEKO 兼容帧 / 任务卡 / 报告）
   mock/            # mock bridge（假身体）：可脚本化 + 可回放的 WebSocket 服务
-tests/             # 协议模型 / mock bridge 真实回环测试
+schema/            # JSON Schema 冻结产物（Java 侧消费，export_schema.py 生成，需提交）
+tests/             # 协议模型 / mock bridge / schema 导出测试
 ```
 
 ## 开发
@@ -30,6 +31,37 @@ WebSocket 上的 JSON 协议（MCP 语义）：
 - 后端 → Mod：工具调用帧（请求-响应，JSON Schema 校验 + capabilities/list 版本协商）
 - Mod → 后端：事件推送帧 `{type:"notification", event, data, timestamp, seq}`
 - NEKO 兼容帧：`task` / `task_finished`（task_id 必须原样回传）
+
+## 协议 Schema 导出（Java 侧消费入口）
+
+协议的运行时权威定义是 `sirius_brain/protocol/` 的 pydantic 模型；同一定义可冻结为 JSON Schema 供 sirius-bridge（Java）直接消费——**Java 侧不读 Python 代码，只读 schema 产物**。
+
+```sh
+# 导出到默认目录 sirius-brain/schema/（改模型后必须重跑并提交）
+.venv\Scripts\python.exe -m sirius_brain.protocol.export_schema
+
+# 自定义输出目录
+.venv\Scripts\python.exe -m sirius_brain.protocol.export_schema --output <DIR>
+```
+
+产物结构（**需提交进版本库**）：
+
+```
+schema/
+  index.json              # 汇总索引：全部文件清单 + 协议版本 1.0 + 导出时间
+  frames/<Frame>.json     # 信封帧（request/response/notification）+ NEKO 兼容帧（task/task_finished）
+  tools/<method>.json     # 各工具 params 契约（文件名 = 方法名，含 '.'，如 input.click.json）
+  tasks/<Model>.json      # 大脑内部任务卡 / 执行器报告
+```
+
+Java 侧消费建议：
+
+- 每个文件都是**自包含**的独立文档：嵌套模型/枚举内联进该文件 `$defs`，`$ref` 一律为 `#/` 片段，无跨文件引用——单文件加载即可校验
+- 方言为 **draft 2020-12**（每个文件首键 `$schema` 已显式声明）
+  - networknt：`JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V202012)` 完整支持
+  - everit-org/json-schema：未知方言 URI 被忽略，按 draft-7 语义校验（`prefixItems` 视为未知关键字，校验偏宽但不报错）
+- 依赖驱动：`tests/test_schema_export.py` 会对比仓库内 `schema/` 与代码重导出结果，改了 pydantic 模型忘了重导出会直接红
+- NEKO 兼容帧（`task`/`task_finished`）与自研 MCP 语义帧的完整映射见 [`../docs_for_agents/protocol-neko-mapping.md`](../docs_for_agents/protocol-neko-mapping.md)
 
 ## Mock Bridge 用法（假身体）
 

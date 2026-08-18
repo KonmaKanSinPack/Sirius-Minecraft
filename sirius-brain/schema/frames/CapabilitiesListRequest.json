@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "后端 → Mod capabilities/list 请求（发现 + 版本协商）。spec §8.2。",
+  "properties": {
+    "type": {
+      "const": "request",
+      "default": "request",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "method": {
+      "const": "capabilities/list",
+      "default": "capabilities/list",
+      "title": "Method",
+      "type": "string"
+    },
+    "params": {
+      "additionalProperties": true,
+      "title": "Params",
+      "type": "object"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "CapabilitiesListRequest",
+  "type": "object"
+}

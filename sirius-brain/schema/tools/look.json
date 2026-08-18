@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "look({ yaw, pitch })。spec §8.2。",
+  "properties": {
+    "yaw": {
+      "maximum": 180.0,
+      "minimum": -180.0,
+      "title": "Yaw",
+      "type": "number"
+    },
+    "pitch": {
+      "maximum": 90.0,
+      "minimum": -90.0,
+      "title": "Pitch",
+      "type": "number"
+    }
+  },
+  "required": [
+    "yaw",
+    "pitch"
+  ],
+  "title": "LookParams",
+  "type": "object"
+}

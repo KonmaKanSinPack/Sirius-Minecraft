@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "reportProgress({ step, done, total })。spec §4.2。",
+  "properties": {
+    "type": {
+      "const": "progress",
+      "default": "progress",
+      "title": "Type",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "string"
+    },
+    "done": {
+      "minimum": 0,
+      "title": "Done",
+      "type": "integer"
+    },
+    "total": {
+      "exclusiveMinimum": 0,
+      "title": "Total",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "task_id",
+    "step",
+    "done",
+    "total"
+  ],
+  "title": "ReportProgress",
+  "type": "object"
+}

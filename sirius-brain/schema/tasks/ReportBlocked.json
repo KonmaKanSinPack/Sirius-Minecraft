@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "reportBlocked({ reason, observation })。spec §4.2 / §5 报告示例。",
+  "properties": {
+    "type": {
+      "const": "blocked",
+      "default": "blocked",
+      "title": "Type",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "reason": {
+      "title": "Reason",
+      "type": "string"
+    },
+    "observation": {
+      "title": "Observation",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "reason",
+    "observation"
+  ],
+  "title": "ReportBlocked",
+  "type": "object"
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "lookAt({ x, y, z })。spec §8.2。",
+  "properties": {
+    "x": {
+      "title": "X",
+      "type": "number"
+    },
+    "y": {
+      "title": "Y",
+      "type": "number"
+    },
+    "z": {
+      "title": "Z",
+      "type": "number"
+    }
+  },
+  "required": [
+    "x",
+    "y",
+    "z"
+  ],
+  "title": "LookAtParams",
+  "type": "object"
+}

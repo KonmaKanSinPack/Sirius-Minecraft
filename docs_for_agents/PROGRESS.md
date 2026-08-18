@@ -4,7 +4,7 @@
 > 设计内容不写这里（在 [sirius-design.md](./sirius-design.md) / [sirius-technical.md](./sirius-technical.md)），这里只记"做到哪了、接下来干什么"。
 > 最后更新：2026-08-18
 
-## 当前阶段：M0 进行中（T1、T2、T4 已完成并验收，T3 待派发）
+## 当前阶段：M0 已完成（T1-T4 全部验收通过）——待启动 M1（眼睛）与 M3 前置开发
 
 ## 已完成
 
@@ -22,10 +22,11 @@
 - [x] **M0-T4**：sirius-bridge NeoForge MDK 骨架完成并验收（MC 1.21.1 / NeoForge 21.1.233 / ModDevGradle 2.0.141 / Gradle 9.2.0 / JDK 21；`gradlew build` BUILD SUCCESSFUL，产物 `build/libs/sirius_bridge-0.1.0.jar`；mods.toml 用 templates+generateModMetadata 方式）
 - [x] **M0-T2**：mock bridge server 完成并验收（`sirius_brain/mock/`：WebSocket 假身体，pydantic 帧校验、能力协商、task→task_finished 五态剧本、事件推送 seq 递增、JSONL 帧回放；pytest 60 项全绿 + 主管独立冒烟三连通过；T1 模型零改动）
 - [x] **仓库**：GitHub `LegnaW/Sirius-Minecraft` 单仓建立（Apache-2.0；设计文档移入 `docs_for_agents/`）
+- [x] **M0-T3**：协议 Schema 导出 + NEKO 映射完成并验收（`sirius_brain/protocol/export_schema.py` CLI；`schema/` 27 个 draft 2020-12 自包含产物 + index.json v1.0；Java 侧可单文件消费；`docs_for_agents/protocol-neko-mapping.md` 帧级双向映射 + 五态转换 + M3 翻译要点 10 条；pytest 162 项全绿，含 schema 与模型同步性防漂移测试；新增 dev 依赖 jsonschema）
 
 ## 进行中
 
-（无——等待 T2/T3 派发确认）
+（无——M0 收口，等待 M1 启动确认）
 
 ## 接下来：M0 剩余任务
 
@@ -33,7 +34,7 @@
 |---|---|---|---|---|
 | T1 | sirius-brain Python 仓库骨架（uv 工程、pydantic 协议模型、pytest） | 无 | pytest 绿；模型与技术规格 §8.2 一致 | 已完成 |
 | T2 | mock bridge server（帧回放 + 可脚本化响应） | T1 | 与 T1 协议模型跑通 task→task_finished 往返 | 已完成 |
-| T3 | 协议 JSON Schema 导出 + NEKO 兼容帧映射说明 | T1 | schema 可被 Java 侧直接消费 | 待派发 |
+| T3 | 协议 JSON Schema 导出 + NEKO 兼容帧映射说明 | T1 | schema 可被 Java 侧直接消费 | 已完成 |
 | T4 | sirius-bridge NeoForge MDK 骨架（仅工程搭建） | 无 | `gradlew build` 通过 | 已完成 |
 
 ## 环境备忘（Windows）
@@ -53,6 +54,7 @@
 | 2026-08-18 | 主管模式：主会话不写代码，派发子代理 + 验收 |
 | 2026-08-18 | 项目根确认 `E:\minecraft-projects\`（文档盘符已修正） |
 | 2026-08-18 | sirius-bridge 目标版本：MC 1.21.1 / NeoForge 21.1.x（与本地 Numen 源码对齐） |
+| 2026-08-18 | 仓库协议 Apache-2.0；协议冻结为 schema/ v1.0（draft 2020-12） |
 
 ## 遗留问题 / 待用户输入
 

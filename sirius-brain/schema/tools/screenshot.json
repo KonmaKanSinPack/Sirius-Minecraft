@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ScreenshotTier": {
+      "description": "截图档位。spec §8.2。",
+      "enum": [
+        "full",
+        "crop"
+      ],
+      "title": "ScreenshotTier",
+      "type": "string"
+    }
+  },
+  "description": "screenshot({ tier: \"full\"|\"crop\", bbox?, quality }) — 它亲眼所见。spec §8.2。",
+  "properties": {
+    "tier": {
+      "$ref": "#/$defs/ScreenshotTier"
+    },
+    "bbox": {
+      "anyOf": [
+        {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Bbox"
+    },
+    "quality": {
+      "anyOf": [
+        {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Quality"
+    }
+  },
+  "required": [
+    "tier"
+  ],
+  "title": "ScreenshotParams",
+  "type": "object"
+}

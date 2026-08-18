@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "WorldQueryType": {
+      "description": "world.query 查询类型。spec §8.2。",
+      "enum": [
+        "blocks",
+        "entities"
+      ],
+      "title": "WorldQueryType",
+      "type": "string"
+    }
+  },
+  "description": "world.query({ type: \"blocks\"|\"entities\", range })。spec §8.2。",
+  "properties": {
+    "type": {
+      "$ref": "#/$defs/WorldQueryType"
+    },
+    "range": {
+      "exclusiveMinimum": 0,
+      "title": "Range",
+      "type": "number"
+    }
+  },
+  "required": [
+    "type",
+    "range"
+  ],
+  "title": "WorldQueryParams",
+  "type": "object"
+}

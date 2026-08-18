@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "后端 → Mod 工具调用请求帧。spec §8.2：请求-响应，JSON Schema 参数校验。",
+  "properties": {
+    "type": {
+      "const": "request",
+      "default": "request",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "method": {
+      "title": "Method",
+      "type": "string"
+    },
+    "params": {
+      "additionalProperties": true,
+      "title": "Params",
+      "type": "object"
+    }
+  },
+  "required": [
+    "id",
+    "method"
+  ],
+  "title": "ToolCallRequest",
+  "type": "object"
+}
