@@ -94,6 +94,7 @@ public final class BridgeServer extends WebSocketServer {
         // (and later input.*) by registering handlers here - dispatcher untouched.
         tools.register("capabilities/list", (ctx, params) ->
                 Json.capabilitiesResponse(ctx.id(), Capabilities.list(), Capabilities.PROTOCOL_VERSION));
+        PerceptionTools.registerAll(tools);
     }
 
     AuditLog audit() {

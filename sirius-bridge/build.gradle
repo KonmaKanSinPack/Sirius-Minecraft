@@ -110,3 +110,28 @@ sourceSets.main.resources.srcDir syncToolSchemas
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
+
+// ------------------------------------------------------------------ smoke test
+// In-process smoke test for the pure tool logic (validation / crop / JPEG
+// budget ladder / response assembly / world scan). No game is launched;
+// gson is the only runtime dependency (same version Minecraft 1.21.1 ships).
+dependencies {
+    testImplementation("com.google.code.gson:gson:2.10.1")
+}
+
+tasks.register("smokeTest", JavaExec) {
+    group = 'verification'
+    description = 'Runs io.sirius.bridge.SmokeMain (pure logic smoke test, no client).'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'io.sirius.bridge.SmokeMain'
+}
+
+// SmokeMain is a main() program, not a JUnit test, so the plain `test` task
+// discovers no tests; that is expected. `check` (and therefore `build`) runs
+// the smoke test instead.
+tasks.named('test') {
+    failOnNoDiscoveredTests = false
+}
+tasks.named('check') {
+    dependsOn 'smokeTest'
+}
