@@ -1,0 +1,25 @@
+modLoader = "javafml" #mandatory
+loaderVersion = "${neoforge_loader_version_range}" #mandatory
+license = "${mod_license}"
+issueTrackerURL = "https://example.invalid/sirius-bridge/issues" # TODO
+
+[[mods]] #mandatory
+modId = "${mod_id}" #mandatory
+version = "${mod_version}" #mandatory
+displayName = "${mod_name}" #mandatory
+authors = "${mod_authors}" #optional
+description = '''${mod_description}'''
+
+[[dependencies.${mod_id}]] #optional
+modId = "neoforge" #mandatory
+type = "required" #mandatory
+versionRange = "[${neoforge_version},)" #mandatory
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.${mod_id}]]
+modId = "minecraft"
+type = "required"
+versionRange = "${minecraft_version_range}"
+ordering = "NONE"
+side = "BOTH"

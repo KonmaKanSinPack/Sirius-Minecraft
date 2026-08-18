@@ -1,0 +1,27 @@
+# Python (sirius-brain)
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+
+# Gradle / Java (sirius-bridge)
+.gradle/
+build/
+runs/
+*.class
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.eclipse/
+bin/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp
+*.ps1.tmp
