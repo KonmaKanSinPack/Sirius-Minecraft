@@ -14,6 +14,10 @@ java {
     toolchain.languageVersion = JavaLanguageVersion.of(java_version as int)
 }
 
+repositories {
+    mavenCentral()
+}
+
 neoForge {
     version = project.neoforge_version
 
@@ -42,6 +46,28 @@ neoForge {
     }
 }
 
+dependencies {
+    // WebSocket server implementation (RFC 6455).
+    // Rationale: the Minecraft 1.21.1 client ships plain Netty modules only
+    // (buffer/codec/common/handler/transport - NO netty-codec-http, verified
+    // against the production client version JSON), so Netty's built-in
+    // WebSocket support (io.netty.handler.codec.http.websocketx.*) is not on
+    // the runtime classpath and hand-rolling RFC 6455 would be overkill.
+    // Java-WebSocket is bundled into the mod jar via NeoForge jar-in-jar.
+    jarJar(implementation("org.java-websocket:Java-WebSocket:1.5.7")) {
+        version {
+            strictly "[1.5.7,2)"
+            prefer "1.5.7"
+        }
+    }
+    // MC <= 1.21.8: jarJar libraries are not automatically on dev-run
+    // classpaths (production loads them from the nested jar). MDG exposes a
+    // per-run configuration named "<runName>AdditionalRuntimeClasspath" (it
+    // only exists after the neoForge{runs{}} block above is evaluated):
+    // this puts the library on the `gradlew runClient` classpath as well.
+    clientAdditionalRuntimeClasspath("org.java-websocket:Java-WebSocket:1.5.7")
+}
+
 var generateModMetadata = tasks.register("generateModMetadata", ProcessResources) {
     var replaceProperties = [
             minecraft_version_range : minecraft_version_range,
@@ -63,6 +89,23 @@ var generateModMetadata = tasks.register("generateModMetadata", ProcessResources
 }
 sourceSets.main.resources.srcDir generateModMetadata
 neoForge.ideSyncTask generateModMetadata
+
+// Single source of truth for the tool JSON schemas is ../sirius-brain/schema
+// (frozen protocol v1.0). This task copies the tool schemas + index.json into
+// the mod jar resources (under schema/) at build time so that
+// capabilities/list always advertises exactly what the Python side expects.
+// One-way copy: nothing here ever writes back into sirius-brain.
+var syncToolSchemas = tasks.register("syncToolSchemas", Sync) {
+    from("../sirius-brain/schema") {
+        include "index.json"
+        include "tools/*.json"
+        into "schema" // land under build/generated/resources/schema/...
+    }
+    // The destination dir becomes the resources srcDir root (see below), so
+    // the jar ends up with schema/index.json + schema/tools/*.json.
+    into layout.buildDirectory.dir("generated/resources")
+}
+sourceSets.main.resources.srcDir syncToolSchemas
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'

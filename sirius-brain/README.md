@@ -11,8 +11,9 @@ Sirius（天狼星）Minecraft AI 陪玩项目的 Python 后端大脑。
 sirius_brain/
   protocol/        # 协议帧 pydantic 模型（信封 / 工具参数 / NEKO 兼容帧 / 任务卡 / 报告）
   mock/            # mock bridge（假身体）：可脚本化 + 可回放的 WebSocket 服务
+  bridge/          # Bridge 客户端：大脑连接身体的统一入口（对 mock 与真 Mod 同一协议）
 schema/            # JSON Schema 冻结产物（Java 侧消费，export_schema.py 生成，需提交）
-tests/             # 协议模型 / mock bridge / schema 导出测试
+tests/             # 协议模型 / mock bridge / schema 导出 / bridge 客户端测试
 ```
 
 ## 开发
@@ -125,3 +126,59 @@ async with MockBridgeServer(script, port=0) as server:   # port=0 随机端口�
 ### 测试
 
 `tests/test_mock_bridge.py` 跑真实 WebSocket 回环（随机端口，不 mock websockets 库）；项目未装 pytest-asyncio，异步场景用 `asyncio.run()` 驱动。
+
+## Bridge 客户端（大脑连接身体的统一入口）
+
+`sirius_brain/bridge/` 是大脑侧的 WebSocket 客户端 `BridgeClient`：**对两种身体同样工作**——mock（上文）与真 Bridge Mod（NeoForge，M1-B/C）协议一致，这是"大脑不绑死身体"的第一次实战。收发帧全部复用 `protocol/` 的 pydantic 模型，不重复定义协议类型。
+
+### 用法
+
+```python
+from sirius_brain.bridge import BridgeClient, BridgeError
+
+# 建议：事件 / task_finished handler 在 connect() 之前注册（身体可能一连上就推帧）
+client = BridgeClient("ws://127.0.0.1:8765", token="s3cret")
+
+@client.on_event("fire")          # 事件订阅 handler（"*" = 通配所有事件）
+def on_fire(frame): ...           # frame: NotificationFrame（seq 单调性已校验）
+
+@client.on_task_finished          # NEKO task_finished 回调（status 为五态枚举）
+def on_finished(frame): ...
+
+async with client:
+    info = await client.capabilities()          # 能力协商：能力清单 + protocol_version
+    stats = await client.call("getStats")       # 工具调用 RPC（id 自动配对）
+    await client.subscribe_events(["fire"])     # events.subscribe 工具的便捷封装
+    task_id = await client.send_task("挖一组铁矿")  # NEKO task 帧（fire-and-forget）
+```
+
+行为要点：
+
+- **token 握手（best-effort）**：配置了 token 时连接后首条消息发送 `{"type":"hello","token":...,"protocol_version":"1.0"}`（spec §8.2 安全模型，真 Mod 要求）。mock 不校验也不回应 hello，客户端兼容"身体不回应"的情况——握手有超时上限、绝不阻塞后续调用，结果记在 `client.hello_result` / `await client.wait_hello()`
+- **工具调用 RPC**：`call(method, params, timeout)` 正常返回 `result`；身体回错误帧（-32601/-32602 等）抛 `BridgeError(code, message, data)`；超时抛 `TimeoutError`；断线时在途请求立刻以 `BridgeError(CODE_CONNECTION_LOST)` 失败
+- **断线自动重连**：次数（`max_reconnects`，None=无限）与指数退避（`reconnect_base_delay` 封顶 `reconnect_max_delay`）可配；状态变化经 `on_state_change(state, detail)` 回调（CONNECTING/CONNECTED/RECONNECTING/DISCONNECTED）。`connect()` 首连失败立即报错、不自动重试
+- **事件分发**：后台接收循环按 event 名分发给已注册 handler；seq 乱序只告警不致命；收到无法识别的帧类型忽略并记录（前向兼容）
+
+### 配置
+
+`BridgeConfig`（url / token / 各超时 / 重连策略）支持三种来源：
+
+```python
+from sirius_brain.bridge import BridgeConfig
+
+BridgeConfig.from_json_file("bridge.json")   # {"url": "ws://...", "token": "...", "request_timeout": 10}
+BridgeConfig.from_env()                      # SIRIUS_BRIDGE_URL / _TOKEN / _REQUEST_TIMEOUT / _MAX_RECONNECTS …
+```
+
+### CLI 冒烟
+
+```sh
+# 连接 mock（或真 Mod），打印能力协商结果 + 订阅事件一行，然后退出
+.venv\Scripts\python.exe -m sirius_brain.bridge --url ws://127.0.0.1:8765 [--token xxx]
+
+# 连不上给清晰错误（退出码 1）；--wait N 可停留 N 秒打印期间收到的事件推送
+```
+
+### 测试
+
+`tests/test_bridge_client.py` 对 mock 跑真实回环：能力协商往返、工具调用（result/error/timeout 三路）、token hello 与 mock 互通、task_finished 回调（特殊字符 task_id + 五态枚举全覆盖）、事件推送（seq 递增）、未知帧忽略 + seq 乱序容忍（对裸推送服务注入）、断线重连与在途请求失败、配置装载（JSON/环境变量）。
