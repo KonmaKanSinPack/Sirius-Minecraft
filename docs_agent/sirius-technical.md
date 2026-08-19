@@ -429,8 +429,9 @@ events.watch({ stat, condition, hysteresis, cooldown_ms })
 
 在线参考：
 
-- [Numen](https://github.com/Dwinovo/minecraft-numen) — 服务端假玩家 AI 同伴（本地副本见上）
-- [N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) — 桌面 AI 伴侣；"一边玩一边解说"陪玩形态的先行实现（本地副本见上）
+- [Mindcraft / Mindcraft CE](https://github.com/mindcraft-bots/mindcraft) — 原版（LLM+mineflayer 玩家，Kolby Nottingham）；[CE 社区版组织](https://github.com/mindcraft-ce) — 本仓本地副本 mindcraft-ce-develop 的血统来源（本机路径见 local.md）
+- [Numen](https://github.com/Dwinovo/minecraft-numen) — 服务端假玩家 AI 同伴（本机路径见 local.md）
+- [N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) — 桌面 AI 伴侣；"一边玩一边解说"陪玩形态的先行实现；独立项目仅设计参考（本机路径见 local.md）
 - [AI-Player](https://github.com/shasankp000/AI-Player) — Fabric 客户端"第二玩家"，截图喂视觉 LLM 链路验证
 - [Voyager](https://github.com/minedojo/voyager) — 分层 agent 与技能库研究鼻祖
 - [Baritone](https://github.com/cabaletta/baritone) — 纯客户端寻路可行性证明（不复制源码）
