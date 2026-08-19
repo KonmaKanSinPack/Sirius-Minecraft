@@ -12,8 +12,9 @@ sirius_brain/
   protocol/        # 协议帧 pydantic 模型（信封 / 工具参数 / NEKO 兼容帧 / 任务卡 / 报告）
   mock/            # mock bridge（假身体）：可脚本化 + 可回放的 WebSocket 服务
   bridge/          # Bridge 客户端：大脑连接身体的统一入口（对 mock 与真 Mod 同一协议）
+  agent/           # Agent 包：VLM 客户端（QwenVLM）+ AgentConfig 配置装载（M3-A）
 schema/            # JSON Schema 冻结产物（Java 侧消费，export_schema.py 生成，需提交）
-tests/             # 协议模型 / mock bridge / schema 导出 / bridge 客户端测试
+tests/             # 协议模型 / mock bridge / schema 导出 / bridge 客户端 / agent VLM 测试
 ```
 
 ## 开发
@@ -183,3 +184,20 @@ BridgeConfig.from_env()                      # SIRIUS_BRIDGE_URL / _TOKEN / _REQ
 ### 测试
 
 `tests/test_bridge_client.py` 对 mock 跑真实回环：能力协商往返、工具调用（result/error/timeout 三路）、token hello 与 mock 互通、task_finished 回调（特殊字符 task_id + 五态枚举全覆盖）、事件推送（seq 递增）、未知帧忽略 + seq 乱序容忍（对裸推送服务注入）、断线重连与在途请求失败、命令编排（T→text→ENTER 出站顺序 + 错误透传，M2-D）、配置装载（JSON/环境变量）。
+
+## Agent 包（M3-A）
+
+M3-A 交付大脑侧 VLM 客户端（`QwenVLM`，DashScope OpenAI 兼容 + 原生 tool-calling + 国内直连 + 重试）与配置装载（`AgentConfig.from_local_md()/from_env()`，key 只从 gitignored 的 local.md ```env 围栏块或环境变量来）；感知→VLM→工具执行的循环本体是 M3-B 的交付物。细节见 [`../docs_agent/reports/M3-A.md`](../docs_agent/reports/M3-A.md)。
+
+```python
+from sirius_brain.agent import AgentConfig, QwenVLM, user_message
+
+config = AgentConfig.from_local_md("../local.md")
+vlm = QwenVLM(config.vlm)
+response = vlm.chat(
+    [user_message("背包里有什么？", images=[jpeg_bytes])],
+    tools=[{"name": "inventory", "description": "查背包",
+            "parameters": {"type": "object", "properties": {}}}],
+)  # 同步方法：asyncio 侧用 asyncio.to_thread(vlm.chat, ...) 包装
+response.tool_calls[0].arguments  # {"...": ...} 已解析成 dict
+```
