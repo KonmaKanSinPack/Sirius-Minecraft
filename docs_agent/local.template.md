@@ -1,4 +1,4 @@
-# local.md 模板 → 复制为仓库根 `local.md` 后自由编辑
+﻿# local.md 模板 → 复制为仓库根 `local.md` 后自由编辑
 
 > **定位**：开发者**本地备忘**——只属于你这台机器/你个人的东西都在这里：环境路径、本机特有的坑、个人特殊要求与偏好。与全局项目无关的内容不放 `docs_agent/`（那是共享权威），放这里。
 > `local.md` 已被 .gitignore 排除，**永不入库**——各开发者独立、自由编辑，结构不限，下列小节只是建议起点。本机密钥/API key 等机密也直接写在本文件（反正永不入库），任何入库文件严禁出现密钥。
@@ -10,6 +10,16 @@
 - 代理：
 - 工具链（不在 PATH 的写全路径）：git / Python venv / uv / JDK / gradlew
 - 测试客户端（Minecraft 身体）：启动器 / 实例目录 / mods 目录 / Bridge 配置与 token / 审计日志 / WS 地址
+
+## 机器可读配置块（可选）
+
+- 需要代码读取的本机配置（API key 等）写成 ```env 围栏块（`KEY=VALUE` 每行一条），加载器解析 local.md 中首个 env 块；示例：
+
+```env
+SIRIUS_VLM_BASE_URL=
+SIRIUS_VLM_API_KEY=
+SIRIUS_VLM_MODEL=
+```
 
 ## 本机特有的坑
 

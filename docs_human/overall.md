@@ -1,4 +1,4 @@
-# Sirius 全局技术文档（overall）
+﻿# Sirius 全局技术文档（overall）
 
 > 写给第一次接触本项目的**人**：从一段话看懂全貌，往下逐层加深，直到贴着源码的细节设计。
 > 所有代码片段逐字摘自仓库真实文件并标注 `文件:行号`（截至 2026-08-18，M0+M1 完成态）。
@@ -22,7 +22,7 @@ Sirius 是一个 Minecraft AI 陪玩项目：让 AI 拥有**一个真正的 Mine
 └─────────────────────────┘         └──────────────────────────────────┘
 ```
 
-两侧唯一的耦合点是**协议**（v1.0，M0 冻结）：MCP 语义的请求-响应 + 事件推送，外加 NEKO 兼容任务帧。大脑对 mock 假身体开发全部逻辑（M0-M3），M3 换真身体零改动——"大脑不绑死身体"已实战验证（同一 BridgeClient 连 mock 与真 Mod）。
+两侧唯一的耦合点是**协议**（v1.0，M0 冻结）：MCP 语义的请求-响应 + 事件推送，外加任务帧（结构吸收自 N.E.K.O，非兼容承诺）。大脑对 mock 假身体开发全部逻辑（M0-M3），M3 换真身体零改动——"大脑不绑死身体"已实战验证（同一 BridgeClient 连 mock 与真 Mod）。
 
 ## 2. 三条调用栈旅程
 
@@ -41,7 +41,7 @@ BridgeClient.call("getStats")
 
 连接建立的前置：首帧必须是 `hello`（token 握手，BridgeServer.java:228），之后通常先 `capabilities/list` 协商能力（12 项，协议版本 1.0）。
 
-### 2.2 一次任务帧的旅程（NEKO 兼容，fire-and-forget）
+### 2.2 一次任务帧的旅程（fire-and-forget）
 
 ```
 BridgeClient.send_task("挖一组铁矿")
@@ -350,10 +350,10 @@ task_id 不参与匹配，回帧一律原样带回——和真 Mod 同一条铁�
             ...
 ```
 
-**M3（会师）**：大脑最简版（单模型：截图→VLM→工具）驱动真身体 + NEKO 协议兼容层。之后 M4-M9：反射/寻路 → 分层大脑 → 记忆 → 知识库 → 技能沉淀 → 陪伴感。完整路线图见 `docs_agent/sirius-technical.md` §10。
+**M3（会师）**：大脑最简版（单模型：结构化感知+按需截图→VLM→工具）驱动真身体（NEKO 兼容层已取消，2026-08-19 裁决）。之后 M4-M9：反射/寻路 → 分层大脑 → 记忆 → 知识库 → 技能沉淀 → 陪伴感。完整路线图见 `docs_agent/sirius-technical.md` §10。
 
 ## 5. 已知边界与下一步
 
-**当前边界（M2 完成态）**：眼睛（screenshot/getStats/world.query/getGuiState）与手（input.* 四原语、look/lookAt、事件推送、权限四级、限频、审计）全部就绪，里程碑收官验收已过——纯脚本零 LLM 完成"按 E 开背包→拖木头→合成工作台"。仍未做：NEKO `task` 帧在 Mod 侧还是占位（立即回 interrupted，M3 兼容层实现）；events.watch（stat 条件触发）留 M3；input_gui/input_world 两档未重启实测（纯逻辑侧冒烟覆盖）；视角转动走动作层（mouse 路径仍需窗口前台）；world.query 的 range 64 开阔空域一次性摸 ~210 万方块位；客户端侧生物血量常未同步（best-effort）。
+**当前边界（M2 完成态）**：眼睛（screenshot/getStats/world.query/getGuiState）与手（input.* 四原语、look/lookAt、事件推送、权限四级、限频、审计）全部就绪，里程碑收官验收已过——纯脚本零 LLM 完成"按 E 开背包→拖木头→合成工作台"。仍未做：`task` 帧在 Mod 侧保持占位（无消费者，兼容层已取消不实现）；events.watch（stat 条件触发）留 M3+；input_gui/input_world 两档未重启实测（纯逻辑侧冒烟覆盖）；视角转动走动作层（mouse 路径仍需窗口前台）；world.query 的 range 64 开阔空域一次性摸 ~210 万方块位；客户端侧生物血量常未同步（best-effort）。
 
-**M3（会师）⭐**：大脑最简版——单模型"截图→VLM→工具"循环驱动真身体 + NEKO 协议兼容层（让 N.E.K.O 人格大脑也能驱动同一身体）。这是"大脑不绑死身体"的第二次实战，也是两条开发轨的会师点。
+**M3（会师）⭐**：大脑最简版——单模型"结构化感知+按需截图→VLM→工具"循环驱动真身体（NEKO 兼容层已取消）。这是"大脑不绑死身体"的第二次实战，也是两条开发轨的会师点。

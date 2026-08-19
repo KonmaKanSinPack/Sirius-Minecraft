@@ -1,6 +1,6 @@
-# 自研协议 ↔ NEKO game_agent 帧映射说明
+﻿# 自研协议 ↔ NEKO game_agent 帧映射说明
 
-> 面向 **M3「NEKO 协议兼容层」实现者**（sirius-bridge Java 侧）。
+> **状态（2026-08-19 用户裁决）**：NEKO 协议兼容层已取消——N.E.K.O 是独立项目，仅作设计参考。本文降级为**参考笔记**（协议设计溯源 + 帧语义参考），不再是任何里程碑的实现简报。
 > 权威来源：[sirius-technical.md](./sirius-technical.md) §8.2（协议规格与 NEKO 帧定义）、`sirius-brain/sirius_brain/protocol/`（pydantic 模型）。
 > 协议冻结产物：`sirius-brain/schema/`（每个文件自包含的 draft 2020-12 JSON Schema，协议版本 1.0）。
 > NEKO 侧参考实现（本地副本）：`E:\minecraft-projects\N.E.K.O-main\plugin\plugins\game_agent_minecraft\`（`client.py` 帧定义 / `service.py` 状态消费与超时 / `__init__.py` 结果分类）。

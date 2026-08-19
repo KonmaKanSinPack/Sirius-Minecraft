@@ -4,7 +4,7 @@
 > 设计内容不写这里（在 [sirius-design.md](../docs_human/sirius-design.md) / [sirius-technical.md](./sirius-technical.md)），这里只记"做到哪了、接下来干什么"。
 > 最后更新：2026-08-19
 
-## 当前阶段：M2（手）**全部完成**——含里程碑收官验收（纯脚本合成工作台）与权限分档实测；待启动 M3（会师）
+## 当前阶段：M3（会师·最小整机）进行中——M3-0 文档轮完成（NEKO 降级/哑管道/反射归 brain 三裁决落文档）；待派发 M3-A（VLM 客户端）
 
 ## 已完成
 
@@ -39,7 +39,7 @@
 
 ## 进行中
 
-（无——M2 收口；下一步 M3：大脑最简版（单模型 截图→VLM→工具）+ NEKO 协议兼容层，见技术规格 §10.1）
+- **M3-0 文档轮（2026-08-19）**：NEKO 兼容层降级 + 反射层归 brain + 路径治理（详见 session 当日）；M3-A/B/C 待派发
 
 ## M2 完成记录（2026-08-19，D 盘机收口）
 
@@ -48,7 +48,7 @@
 - [x] **M2-D look/lookAt+权限+command()**：vanilla Entity.lookAt 原式（setYRot/setXRot+yRotO/xRotO 同步，服务器自动跟随）；权限四级 observe/input_world/input_gui/full（默认 full 向后兼容，-32012+审计）；BridgeClient.command()（T→text→ENTER+500ms 沉降）。冒烟 241/pytest 193
 - [x] **M2 里程碑收官验收 PASS**：`m2_final.py` 纯脚本零 LLM——/give→E→getGuiState 定位→坐标换算→拖拽合成→工作台入包；终态双通道确认（结构化断言 + qwen3.7-plus 高清识图独立定位）；证据 m2_final_1~4.jpg
 - [x] **权限分档实测 PASS**（observe：感知照常/行为 -32012/审计留痕；验后已回 full）
-- [x] **参考项目精读落地**（RULES §3 先找参考）：本机克隆 D:\AI\Project\references\（numen/N.E.K.O/mindcraft-ce）；技术规格 §8.3 已按 Numen 现行代码修正（竞价→序数分层）
+- [x] **参考项目精读落地**（RULES §3 先找参考）：本机参考项目位于各开发者自己的机器（本仓约定见 `local.md`「参考项目」节；此前误记的 `D:\AI\Project\references\` 为另一开发机的私有路径，公共文档不记本机路径——2026-08-19 修正）；技术规格 §8.3 已按 Numen 现行代码修正（竞价→序数分层）
 
 ## 接下来：M0 剩余任务
 
@@ -87,6 +87,10 @@
 | 2026-08-18 | sirius-bridge 目标版本：MC 1.21.1 / NeoForge 21.1.x（与本地 Numen 源码对齐） |
 | 2026-08-18 | 仓库协议 Apache-2.0；协议冻结为 schema/ v1.0（draft 2020-12） |
 | 2026-08-18 | M1 WS 依赖选型 Java-WebSocket（生产客户端无 netty-codec-http，手写 RFC6455 过重） |
+| 2026-08-19 | **NEKO 协议兼容层取消**：N.E.K.O 是独立项目（自有感知/思维链路），降为纯设计参考；任务帧保留在协议但不作兼容承诺 |
+| 2026-08-19 | **Bridge=哑管道**：只上报/接受信息，一切处理归 brain；API key 只配 local.md 一遍（排查确认 bridge 无 VLM 代码/无出站 HTTP，无需删码） |
+| 2026-08-19 | **反射层归 brain**（原 §8.3 规划在 bridge 轨）：Python 无 LLM 规则消费 M2-B 的 CRITICAL 危险事件；寻路同理 brain 侧 |
+| 2026-08-19 | **M3 方案定稿**：qwen3.7-plus 单模型；原生 tool-calling；结构化感知优先+按需截图；mock 双人先行、真机 LAN 收官 |
 
 ## 遗留问题 / 待用户输入
 

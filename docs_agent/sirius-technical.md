@@ -384,16 +384,17 @@ events.watch({ stat, condition, hysteresis, cooldown_ms })
 → 环形缓冲 3 帧
 ```
 
-**协议兼容层（战略）**：Bridge Mod 实现 N.E.K.O game_agent 协议作为兼容模式 → N.E.K.O（语音陪伴人格大脑）与我们的大脑（分层任务大脑）可驱动同一身体——"身体不绑死大脑"与"大脑不绑死身体"互为镜像。
+**协议兼容层（已取消，2026-08-19 用户裁决）**：原计划 Bridge Mod 实现 N.E.K.O game_agent 协议作为第二前端——裁决 N.E.K.O 是独立项目（自有感知与思维链路），兼容它意义不大，**降级为纯设计参考**。已冻结的任务帧（task/task_finished）保留在协议中（mock/客户端在用），不再作为兼容承诺。
 
 **安全模型（内建）**：默认 localhost；token 握手；权限分级 `observe`/`input_world`/`input_gui`；输入限频 ~20次/s；审计日志。（对齐 Numen MCP 服务端已验证的安全实践）
 
 **分工原则**：输入标准化、感知原语化——Mod 是哑管道，怎么用归后端。
 
-### 8.3 客户端反射层与寻路（自研，设计借鉴 Numen）
+### 8.3 反射层与寻路（brain 侧，设计借鉴 Numen；2026-08-19 用户裁决归属）
 
-- **本能链：序数固定分层（2026-08-19 依据 Numen 现行代码修正；原"每 tick 数值竞价出价制"是 Numen 旧设计，其现行 TaskSelector 已退役浮点竞价）**：每 tick 按注册序自上而下问 `canRun()`，首个可运行者独占身体；层级固定（反射 → 同步槽 → 当前任务 → 空闲姿态），每层至多一个候选，无比较可言——可预测性优先于"最优性"（Numen TaskSelector.java:21-67 的裁决理由）。分层参照：MLG > 换气 > 怪物防御 > 脱困（序数 10/20/30/50 仅表顺序）。**中断=边沿触发**（胜者变化的那一 tick 才 `stop(PREEMPTED)`，不是每 tick 重发）；**抢占≠结算**（任务保留状态，截止时间在抢占期每 tick 冻结 +1，任务恢复后仍恰好产出一次结果）；任务可钉住（pin）特定反射，身体空闲时自动释放
-- **寻路**：客户端侧 A* + 预算化部分路径提交 + 路径跟随看门狗（参考 Baritone 可行性证明与 Numen 寻路层设计文档；**不复制任何源码**——Numen 宪法注明其与 Baritone 无衍生关系，我们同样保持清洁）
+- **归属裁决（2026-08-19）**：Bridge 是哑管道（只上报/接受信息，见 §8.2 分工原则），一切处理归 brain——反射层实现为 **brain 侧无 LLM 规则模块**，消费 Bridge 上报的 CRITICAL 危险事件（drown/fire/health_low/death，M2-B 已实现），回灌 input.* 指令；localhost WS 往返延迟对本能响应足够（MLG 级毫秒精度需求届时再议，可设计"预武装模式"由 brain 预授指令模板）
+- **本能链：序数固定分层（2026-08-19 依据 Numen 现行代码修正；原"每 tick 数值竞价出价制"是 Numen 旧设计，其现行 TaskSelector 已退役浮点竞价）**：按注册序自上而下问 `canRun()`，首个可运行者独占身体；层级固定（反射 → 同步槽 → 当前任务 → 空闲姿态），每层至多一个候选，无比较可言——可预测性优先于"最优性"（Numen TaskSelector.java:21-67 的裁决理由）。分层参照：MLG > 换气 > 怪物防御 > 脱困（序数 10/20/30/50 仅表顺序）。**中断=边沿触发**（胜者变化的那一 tick 才 `stop(PREEMPTED)`，不是每 tick 重发）；**抢占≠结算**（任务保留状态，截止时间在抢占期每 tick 冻结 +1，任务恢复后仍恰好产出一次结果）；任务可钉住（pin）特定反射，身体空闲时自动释放
+- **寻路**：brain 侧 A*（世界数据来自 world.query/事件流）+ 预算化部分路径提交 + 路径跟随看门狗，经 input.key 驱动移动（参考 Baritone 可行性证明与 Numen 寻路层设计文档；**不复制任何源码**）；Baritone 作为 bridge 侧运动能力依赖的选项在 M4 前裁决——若采纳则属例外，须重新评审"哑管道"边界
 - 异步任务受理即回执 `{task_id, async:true}`，`task_finished/task_timeout` 事件；**替换式受理**（派新活顶掉旧活，旧任务恰好结算一次；唯一拒绝例：同 tick 内刚受理的任务——防模型一轮内双重派单）；**重派=重算**（无恢复簿记，进度已在背包里）；超时报告带进度与"推进中→重派同目标 vs 停滞→改主意"裁决信息
 
 ### 8.4 从 Numen 吸收的设计修正（保留）
@@ -401,7 +402,7 @@ events.watch({ stat, condition, hysteresis, cooldown_ms })
 | 原设计 | 修正 | 理由 |
 |---|---|---|
 | 中断三档 CANCEL/PAUSE/DEFLECT | **取消 PAUSE**，保留 CANCEL/DEFLECT；恢复=重派（带新信息重算，背包收获即进度） | 无检查点簿记，无状态不一致 |
-| 固定优先级中断表 | 反射层采用每 tick 竞价出价制 | 更通用，新增本能零调度代码 |
+| 固定优先级中断表 | 反射层采用序数固定分层（Numen 现行设计） | 可预测性优先于"最优性"，新增本能零调度代码 |
 | 消息消费时机 | 收件箱三态路由（回合中贴边界/任务中立刻开轮/空闲搭车） | 消息时机由大脑状态决定，不由消息类型决定 |
 | 视觉优先（截图→VLM） | 空间导航感知用**语义字符网格**（从客户端世界数据生成）；截图用于目标识别/共视觉/证据 | STMR 文献：网格 vs 图像 SR 15.0% vs 1.1% |
 | Skill 格式 | 兼容 Numen Skill Markdown 格式（`name/description` frontmatter + 正文） | 社区内容互通 |
@@ -414,17 +415,17 @@ events.watch({ stat, condition, hysteresis, cooldown_ms })
 
 ### 8.6 参考项目清单
 
-**项目根目录：`E:\minecraft-projects\`**（所有参考资料与项目统一存放于此）
+**本机克隆路径不写入本文档**（各开发者机器不同，一律见自己机器的 `local.md`「参考项目」节）。
 
-本地资源（`E:\minecraft-projects\` 下）：
+参考项目价值一览（本机克隆路径见 `local.md`）：
 
-| 路径 | 内容 | 对 Sirius 的价值 |
-|---|---|---|
-| `Sirius-Minecraft\` | 本项目（设计文档 + 未来 sirius-brain / sirius-bridge 仓库） | 项目根 |
-| `mindcraft-ce-develop\` | Mindcraft CE（Node，mineflayer） | 遗产代码库：命令系统/conversation/modes 逻辑移植来源；逃生轨身体 |
-| `minecraft-numen-1.21.1\` | Numen（服务端假玩家 AI 同伴） | 设计供体：竞价调度/收件箱路由/异步任务/重派即恢复/字符网格（`docs/spatial-perception.md`）/寻路（`docs/pathing-refactor-log.md`）/Skill 格式/MCP 服务端安全模型（`docs/mcp-server.md`）；心智模型宪法（`docs/architecture-mind-model.md`） |
-| `N.E.K.O-main\` | N.E.K.O（桌面 AI 伴侣，Python，Apache-2.0） | 设计供体：证据数学（`memory/evidence.py`）/反思层（`memory/reflection/`）/检索重排（`memory/recall.py`）/说话者信任（`memory/speaker_trust.py`）；任务帧协议+截图预算管线（`plugin/plugins/game_agent_minecraft/`）；人设参考（Numen persona 同源思想）；Python 后端同语言移植母本 |
-| `neoforge-docs\` | NeoForge 官方文档源码（Docusaurus，1.20.4–1.21.11） | sirius-bridge 开发手册：`docs/gettingstarted/`、`docs/networking/`、`versioned_docs/` 按目标版本取用 |
+| 项目 | 对 Sirius 的价值 |
+|---|---|
+| 本项目 | Sirius-Minecraft（sirius-brain + sirius-bridge 单仓） |
+| Mindcraft CE（Node，mineflayer） | 遗产代码库：命令系统/conversation/modes 逻辑移植来源；逃生轨身体 |
+| Numen（服务端假玩家 AI 同伴） | 设计供体：序数分层调度/收件箱路由/异步任务/重派即恢复/字符网格（`docs/spatial-perception.md`）/寻路（`docs/pathing-refactor-log.md`）/Skill 格式/MCP 服务端安全模型（`docs/mcp-server.md`）；心智模型宪法（`docs/architecture-mind-model.md`） |
+| N.E.K.O（桌面 AI 伴侣，Python，Apache-2.0；独立项目，仅设计参考，不做协议兼容） | 设计供体：证据数学（`memory/evidence.py`）/反思层（`memory/reflection/`）/检索重排（`memory/recall.py`）/说话者信任（`memory/speaker_trust.py`）；任务帧结构+截图预算管线（`plugin/plugins/game_agent_minecraft/`）；人设参考 |
+| NeoForge 官方文档 | sirius-bridge 开发手册：gettingstarted/networking/按目标版本取用 |
 
 在线参考：
 
@@ -459,7 +460,6 @@ events.watch({ stat, condition, hysteresis, cooldown_ms })
 - [ ] 反思层：对话式验证的触发与话术设计（何时把假设说出口）；3天自动转正的计时与存档
 - [ ] 证据数学参数：REIN/DISP 半衰期天数、promoted/confirmed/archive 阈值、说话者信任初值
 - [ ] 主动陪伴：主动开口的触发器清单与频率上限（避免话痨）；现实时间感知的注入方式
-- [ ] NEKO 协议兼容层：game_agent 协议（task/log/screenshot/task_finished）作为 Bridge Mod 的第二前端；与自研 MCP 语义的映射关系
 - [ ] 人设系统：出厂人设卡套件（几款预置性格）；SillyTavern 角色卡导入的字段映射；旁白短语模板集的分节语法；人设卡 lint 规则清单
 
 ---
@@ -471,24 +471,24 @@ events.watch({ stat, condition, hysteresis, cooldown_ms })
 开发四原则：薄切片先通再逐层加厚；风险前置（输入注入保真度最先验证）；协议先行（契约冻结后两轨并行）；每步有真人可看的演示。
 
 ```
-sirius-bridge（身体轨，Java）：M1 眼 → M2 手 ── M3 会师 ──→ M4 反射+寻路 → …
-sirius-brain（大脑轨，Python）：M0 协议冻结（对 mock body 开发）→ M3 会师
+sirius-bridge（身体轨，Java，哑管道）：M1 眼 → M2 手 ── M3 会师 ──→ M4（仅原语增补）→ …
+sirius-brain（大脑轨，Python）：M0 协议冻结（对 mock body 开发）→ M3 会师 ──→ M4 反射+寻路（智能全在此轨）→ …
 ```
 
 > 并行轨修正（Python 裁决的代价）：大脑不再借用 mineflayer 身体（纯 JS 库）。对策 = **mock 优先**：M0 的 Python mock body 回放录制的真实协议帧，大脑全逻辑对 mock 开发；如需早期真机联调，可写百行 Node 垫片把 Mindcraft CE 包成 sirius 协议身体（可选，不进主线）。
 
 | 里程碑 | 内容 | 验收标准 | 规模 |
 |---|---|---|---|
-| **M0 协议冻结+基建** | 双仓库（sirius-bridge / sirius-brain）；协议 schema 定稿（MCP 语义+NEKO 兼容帧+task_id 回传+五态状态表，pydantic 模型+JSON Schema 双产出）；**Python mock bridge server**（帧回放+可脚本响应）；NeoForge MDK 环境 | 双方对着同一份 schema 开发，mock 跑通 task/事件往返 | S |
+| **M0 协议冻结+基建** | 双仓库（sirius-bridge / sirius-brain）；协议 schema 定稿（MCP 语义+任务帧（结构吸收自 N.E.K.O）+task_id 回传+五态状态表，pydantic 模型+JSON Schema 双产出）；**Python mock bridge server**（帧回放+可脚本响应）；NeoForge MDK 环境 | 双方对着同一份 schema 开发，mock 跑通 task/事件往返 | S |
 | **M1 眼睛** | screenshot/getStats/world.query + localhost/token | Python 客户端连上并截图存盘，整合包客户端画面正确（含 Mod 内容） | S |
 | **M2 手** | input.* 四原语 + 事件订阅推送 | **纯脚本重放**"按 E 开背包→拖木头→合成工作台"——证明项目可行性 | M |
-| **M3 会师：最小整机** ⭐ | 大脑最简版（**单模型，先不分层**）截图→VLM→工具；NEKO 协议兼容层 | 打字"把石头扔进箱子"，bot 看屏幕完成；NEKO 也能驱动同一身体 | M |
-| **M4 反射+寻路** | 本能链（竞价）；寻路（评估 Baritone 可选依赖） | 被围攻能脱战；"跟我来"能穿越 200 格 | L |
+| **M3 会师：最小整机** ⭐ | 大脑最简版（**单模型，先不分层**）结构化感知+按需截图→VLM（tool-calling）→工具（NEKO 兼容层已取消，2026-08-19 裁决） | 玩家在游戏聊天打字（如"把石头扔给我"），bot 听到并自主完成，全程闭环 | M |
+| **M4 反射+寻路** | brain 侧本能链（序数分层，消费 CRITICAL 事件）；寻路（brain 侧 A*，评估 Baritone 可选依赖） | 被围攻能脱战；"跟我来"能穿越 200 格 | L |
 | **M5 分层大脑** | 规划器/执行器分家、任务卡、TaskManager（替换式受理）、双 history；移植 Mindcraft CE 命令/对话 | 挖矿时连续聊天不阻塞；"搞一组铁装备"能分解执行 | M |
 | **M6 记忆 L1/L2+玩家记忆** | 活跃层得分、LanceDB、证据数学全套 | 跨会话记得玩家愿望；被纠正的错误不再犯 | M |
 | **M7 L3 知识库** | 数据包导入、触发式检索、置信度演化、图像记忆 | 新 Mod 玩 3 小时后能答"紫色方块怎么用"，答案可溯源 | M/L |
 | **M8 Skill 沉淀** | 轨迹记录、提炼、验证转正、退化重学；亲手模式 | 第二次同类 Mod 机器操作直接调 skill 快速完成 | L |
-| **M9 陪伴感** | 主动陪伴触发器（nudge 循环，抄 NEKO 参数）、现实时间、人格演化、语音（借 NEKO 兼容层） | 深夜主动唠叨；boss 出现主动惊叹 | S/M |
+| **M9 陪伴感** | 主动陪伴触发器（nudge 循环，抄 NEKO 参数）、现实时间、人格演化、语音（直连 TTS，M9 前再定方案） | 深夜主动唠叨；boss 出现主动惊叹 | S/M |
 
 **阶段递进逻辑**：M0-M3 证明它能活 → M4-M8 证明它好用 → M9 证明它像人。
 
@@ -498,7 +498,6 @@ sirius-brain（大脑轨，Python）：M0 协议冻结（对 mock body 开发）
 |---|---|---|
 | Baritone 依赖 vs 自研寻路 | M4 前 | API 依赖（LGPL，法律干净）省数月 vs 完全自主 |
 | 执行器①是否引入 Numen 式确定性任务 | M5 前 | 挖矿/战斗等高频任务硬化成代码，小模型只做长尾 |
-| NEKO 兼容层升级为正式支持 | M3 后 | 若社区反响好，双前端（NEKO 人格/我们大脑）作为卖点 |
 
 ### 贯穿全程的工程纪律
 
@@ -519,4 +518,4 @@ sirius-brain（大脑轨，Python）：M0 协议冻结（对 mock body 开发）
 
 ## 10.2 扩展轨
 
-大脑层保持身体无关：可接管 mineflayer（Mindcraft CE）或 Numen（其 MCP 服务端）作为备选身体；sirius-bridge 通过 NEKO 协议兼容层亦可被 N.E.K.O 人格大脑驱动——身体不绑死大脑。
+大脑层保持身体无关：可接管 mineflayer（Mindcraft CE）或 Numen（其 MCP 服务端）作为备选身体——身体不绑死大脑（NEKO 侧兼容已取消，见 §8.2 裁决）。
