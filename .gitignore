@@ -34,8 +34,5 @@ Thumbs.db
 .hmcl/
 HMCL-*.exe
 
-# Per-developer local notes: paths + machine quirks + personal prefs (see docs_agent/local.template.md)
+# Per-developer local notes: paths + quirks + prefs + local secrets (see docs_agent/local.template.md)
 local.md
-# Per-developer secrets / API keys (never commit)
-local.env
-*.local.env
