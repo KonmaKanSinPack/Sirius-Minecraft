@@ -36,3 +36,6 @@ HMCL-*.exe
 
 # Per-developer local notes: paths + machine quirks + personal prefs (see docs_agent/local.template.md)
 local.md
+# Per-developer secrets / API keys (never commit)
+local.env
+*.local.env
