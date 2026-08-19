@@ -173,12 +173,17 @@ class LoopConfig:
     max_steps: int = 25
     # 连续两次 VLM 调用之间的最小间隔（秒）；0 = 不限
     min_interval: float = 0.0
+    # 单任务 token 预算（按各步 VLM usage.total_tokens 累计；默认宽松不束缚正常任务）。
+    # M3-B 增补字段（简报预留项），纯新增不影响既有构造
+    max_total_tokens: int = 200_000
 
     def __post_init__(self) -> None:
         if self.max_steps < 1:
             raise ValueError(f"max_steps 须 >= 1，got {self.max_steps}")
         if self.min_interval < 0:
             raise ValueError(f"min_interval 须 >= 0，got {self.min_interval}")
+        if self.max_total_tokens <= 0:
+            raise ValueError(f"max_total_tokens 须 > 0，got {self.max_total_tokens}")
 
 
 @dataclass

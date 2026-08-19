@@ -12,9 +12,9 @@ sirius_brain/
   protocol/        # 协议帧 pydantic 模型（信封 / 工具参数 / NEKO 兼容帧 / 任务卡 / 报告）
   mock/            # mock bridge（假身体）：可脚本化 + 可回放的 WebSocket 服务
   bridge/          # Bridge 客户端：大脑连接身体的统一入口（对 mock 与真 Mod 同一协议）
-  agent/           # Agent 包：VLM 客户端（QwenVLM）+ AgentConfig 配置装载（M3-A）
+  agent/           # Agent 包：VLM 客户端（M3-A）+ 最小大脑循环 AgentLoop/工具注册表（M3-B）
 schema/            # JSON Schema 冻结产物（Java 侧消费，export_schema.py 生成，需提交）
-tests/             # 协议模型 / mock bridge / schema 导出 / bridge 客户端 / agent VLM 测试
+tests/             # 协议模型 / mock bridge / schema 导出 / bridge 客户端 / agent VLM / agent 循环测试
 ```
 
 ## 开发
@@ -185,9 +185,9 @@ BridgeConfig.from_env()                      # SIRIUS_BRIDGE_URL / _TOKEN / _REQ
 
 `tests/test_bridge_client.py` 对 mock 跑真实回环：能力协商往返、工具调用（result/error/timeout 三路）、token hello 与 mock 互通、task_finished 回调（特殊字符 task_id + 五态枚举全覆盖）、事件推送（seq 递增）、未知帧忽略 + seq 乱序容忍（对裸推送服务注入）、断线重连与在途请求失败、命令编排（T→text→ENTER 出站顺序 + 错误透传，M2-D）、配置装载（JSON/环境变量）。
 
-## Agent 包（M3-A）
+## Agent 包（M3-A：VLM 客户端）
 
-M3-A 交付大脑侧 VLM 客户端（`QwenVLM`，DashScope OpenAI 兼容 + 原生 tool-calling + 国内直连 + 重试）与配置装载（`AgentConfig.from_local_md()/from_env()`，key 只从 gitignored 的 local.md ```env 围栏块或环境变量来）；感知→VLM→工具执行的循环本体是 M3-B 的交付物。细节见 [`../docs_agent/reports/M3-A.md`](../docs_agent/reports/M3-A.md)。
+M3-A 交付大脑侧 VLM 客户端（`QwenVLM`，DashScope OpenAI 兼容 + 原生 tool-calling + 国内直连 + 重试）与配置装载（`AgentConfig.from_local_md()/from_env()`，key 只从 gitignored 的 local.md ```env 围栏块或环境变量来）。细节见 [`../docs_agent/reports/M3-A.md`](../docs_agent/reports/M3-A.md)；把 VLM 接成整机循环的是上文"Agent 循环（M3-B）"。
 
 ```python
 from sirius_brain.agent import AgentConfig, QwenVLM, user_message
@@ -201,3 +201,47 @@ response = vlm.chat(
 )  # 同步方法：asyncio 侧用 asyncio.to_thread(vlm.chat, ...) 包装
 response.tool_calls[0].arguments  # {"...": ...} 已解析成 dict
 ```
+
+## Agent 循环（M3-B）
+
+M3-B 把 QwenVLM 与 BridgeClient 接成**最小整机大脑**：玩家在游戏聊天打字 → bot 感知 → VLM 决策 → 工具执行 → 游戏内回话。细节见 [`../docs_agent/reports/M3-B.md`](../docs_agent/reports/M3-B.md)。
+
+### 组成
+
+- `agent/tools.py`——**工具注册表**：从冻结产物 `schema/tools/*.json` 读参数 schema，组装 OpenAI function-calling 工具表（M3 白名单最小集 11 个：getStats/getGuiState/world.query/screenshot/lookAt/input.mouseMove/input.click/input.key/input.text + 自定义 command/finish）；每工具一个 `async handler(client, args) -> ToolOutcome`，白名单外/参数错在客户端本地拒绝；`ToolRegistry.register(ToolSpec(...))` 可扩展（M5 分层留口）
+- `agent/loop.py`——**AgentLoop**：chat 订阅指令入口（自回显双重过滤：抑制窗 + world.query 位置匹配自识别 uuid）、急停（"停下"/"stop" 在下一检查点断出并回话）、任务循环（系统提示 + 初始观测 → `asyncio.to_thread(vlm.chat, ...)` → 工具执行 → 结果回填，直至 finish / 纯文本回复 / max_steps / token 预算）、上下文管理（单条工具结果 >4000 字符截断、截图图像仅保留最近 1 张）
+- `agent/__main__.py`——CLI 装配入口（见下）
+
+```python
+from sirius_brain.agent import AgentConfig, AgentLoop, QwenVLM, default_registry
+from sirius_brain.bridge import BridgeClient
+
+config = AgentConfig.from_local_md("../local.md")
+client = BridgeClient(config.bridge)
+vlm = QwenVLM(config.vlm)
+loop = AgentLoop(client, vlm, config, persona="天狼星")
+loop.install()                    # 注册 chat handler（connect 之前）
+async with client:
+    await loop.run()              # 常驻：订阅 chat → 串行执行任务队列
+    # 单任务直驱（不经 chat）：run = await loop.run_task("丢一块石头给我")
+```
+
+### 任务语义
+
+- **结束**：`finish(result)` 或纯文本回复 → `client.command(result)` 游戏内播报；max_steps（默认 25）/ token 预算（`LoopConfig.max_total_tokens`，默认 200000）用尽 → 播报"这个任务我先到这：（进度摘要）"；急停不播报（chat handler 已回话"好的，停下了"）
+- **安全约束**写进系统提示（禁攻击/不丢重要物品/先观察再行动）；M3 白名单本身不含攻击类工具（look/input 原语之外无攻击入口）
+- 单条工具结果文本超 4000 字符截断（保留头尾）；`screenshot` 的图像 bytes 附在下一轮 user 消息，历史消息里的旧图被裁掉（只留最近 1 张）
+
+### CLI
+
+```sh
+# 连 mock（先起 python -m sirius_brain.mock）或真 Mod；打印就绪信息后常驻等待聊天指令
+.venv\Scripts\python.exe -m sirius_brain.agent --local-md local.md \
+    [--url ws://127.0.0.1:8765] [--token XXX] [--max-steps 25] [-v]
+```
+
+就绪信息：bridge 地址/hello 状态、自身 uuid（识别失败注明抑制窗兜底）、工具表、步数与 token 预算、VLM 模型。Ctrl+C 优雅退出。
+
+### 测试
+
+`tests/test_agent_loop.py`（19 项，全离线）：fake VLM（`ScriptedVLM` 剧本回放）× mock 双人剧本（`tests/fixtures/two_player_scene.json`，真实 WebSocket 回环）——全流程（指令→getStats→lookAt→command 话术→finish 播报上 wire）、自回显三连不触发新任务、急停断出与回话、max_steps/token 预算用尽播报、screenshot 图像附消息与旧图裁剪、白名单拒绝、截断边界、CLI 参数装载。

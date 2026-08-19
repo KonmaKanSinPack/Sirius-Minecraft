@@ -1,10 +1,12 @@
-"""Agent 包：M3 大脑侧的 VLM 客户端与配置。spec §10.1 M3-A。
+"""Agent 包：M3 大脑侧的 VLM 客户端、配置与最小工具循环。spec §10.1 M3-A/M3-B。
 
 - ``QwenVLM``：OpenAI 兼容 chat/completions + 原生 tool-calling（DashScope
   qwen3.7-plus 配方），transport 可注入（测试零网络）
-- ``AgentConfig``：VLM + bridge + 循环（预留）聚合配置；local.md ```env 围栏块
-  或环境变量装载，key 只存在于 gitignored 文件，绝不入库
-- 工具循环本体（感知→VLM→工具执行）是 M3-B 的交付物，不在本包内
+- ``AgentConfig``：VLM + bridge + 循环聚合配置；local.md ```env 围栏块或环境
+  变量装载，key 只存在于 gitignored 文件，绝不入库
+- ``AgentLoop``（M3-B）：最小整机大脑循环——玩家聊天指令 → 感知 → VLM 决策 →
+  工具执行 → 游戏内回话；``ToolRegistry``/``default_registry`` 组装 function-calling
+  工具表（M3 白名单最小集 + 可扩展）
 """
 
 from .config import (
@@ -13,6 +15,31 @@ from .config import (
     AgentConfig,
     VLM_ENV_PREFIX,
     parse_env_fenced_block,
+)
+from .loop import (
+    DEFAULT_ECHO_WINDOW,
+    NIL_UUID,
+    PARTIAL_DONE_PREFIX,
+    STOP_REPLY_TEXT,
+    STOP_WORDS,
+    AgentLoop,
+    LoopClient,
+    SelfEchoFilter,
+    TaskRun,
+    ToolExec,
+    match_self_uuid,
+)
+from .tools import (
+    BRIDGE_WHITELIST,
+    COMMAND_TOOL,
+    FINISH_TOOL,
+    ToolOutcome,
+    ToolRegistry,
+    ToolSpec,
+    UnknownToolError,
+    compact_json,
+    default_registry,
+    load_schema_parameters,
 )
 from .vlm import (
     CODE_INVALID_RESPONSE,
@@ -33,9 +60,26 @@ from .vlm import (
 
 __all__ = [
     "AgentConfig",
+    "AgentLoop",
+    "BRIDGE_WHITELIST",
+    "COMMAND_TOOL",
+    "DEFAULT_ECHO_WINDOW",
+    "FINISH_TOOL",
+    "LoopClient",
     "LoopConfig",
+    "NIL_UUID",
+    "PARTIAL_DONE_PREFIX",
     "QwenVLM",
+    "SelfEchoFilter",
+    "STOP_REPLY_TEXT",
+    "STOP_WORDS",
+    "TaskRun",
     "ToolCall",
+    "ToolExec",
+    "ToolOutcome",
+    "ToolRegistry",
+    "ToolSpec",
+    "UnknownToolError",
     "VLMConfig",
     "VLMError",
     "VLMResponse",
@@ -44,6 +88,10 @@ __all__ = [
     "VLM_ENV_PREFIX",
     "CODE_NETWORK_ERROR",
     "CODE_INVALID_RESPONSE",
+    "compact_json",
+    "default_registry",
+    "load_schema_parameters",
+    "match_self_uuid",
     "parse_env_fenced_block",
     "sniff_image_mime",
     "system_message",
