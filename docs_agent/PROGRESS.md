@@ -4,7 +4,7 @@
 > 设计内容不写这里（在 [sirius-design.md](../docs_human/sirius-design.md) / [sirius-technical.md](./sirius-technical.md)），这里只记"做到哪了、接下来干什么"。
 > 最后更新：2026-08-19
 
-## 当前阶段：M3（会师·最小整机）进行中——M3-0 文档轮完成（NEKO 降级/哑管道/反射归 brain 三裁决落文档）；待派发 M3-A（VLM 客户端）
+## 当前阶段：M3（会师·最小整机）**已完成**——真机闭环验证通过（2/3 任务完整闭环，1 预算用尽）；待启动 M4（反射+寻路）
 
 ## 已完成
 
@@ -39,7 +39,10 @@
 
 ## 进行中
 
-- **M3-0 文档轮（2026-08-19）**：NEKO 兼容层降级 + 反射层归 brain + 路径治理（详见 session 当日）；M3-A/B/C 待派发
+- **M3 收尾（2026-08-19）**：三裁决落文档 + M3-A/B/C 全完成 + 真机验收；问题清单见 reports/M3-C.md（P0: token 预算紧/world.query 截断/不会组合挖方块；P1: hello_ack 未建模/command 丢字/history 未压缩）
+- [x] **M3-A**：QwenVLM 客户端完成并验收（原生 tool-calling、b64 图片、直连清代理、重试退避、用量统计、transport 可注入 fake）；AgentConfig 从 local.md env 围栏块加载；pytest 244 绿；真实冒烟 1.17s
+- [x] **M3-B**：最小大脑循环完成并验收（chat 指令入口+自回显双重过滤+急停+tool-calling 循环+finish/播报+上下文预算）；mock 双人全流程回归资产入库；pytest 263 绿
+- [x] **M3-C 真机验收**：真服务器生存模式三任务——「你好」1 步闭环、「来我这里」11 步闭环（world.query→lookAt→走→验位→finish）、「搜集云杉木」22 步预算用尽中止（方向对没走完）。**最小整机大脑闭环成立**，详见 reports/M3-C.md
 
 ## M2 完成记录（2026-08-19，D 盘机收口）
 
