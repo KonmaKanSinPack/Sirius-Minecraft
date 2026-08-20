@@ -193,6 +193,80 @@ class TestWalkTo:
         asyncio.run(main())
 
 
+# ---------------------------------------------------------------------- 界面屏障（T0b 教训）
+
+
+class ScreenStubClient:
+    """无服务器最小 client（Primitives 只要求 call/command）：getGuiState 按 screens
+    序列回放（最后一条重复）；fail_gui=True 时 getGuiState 抛错（屏障降级路径）。"""
+
+    def __init__(self, screens: list[dict], *, fail_gui: bool = False):
+        self.screens = list(screens)
+        self.fail_gui = fail_gui
+        self.commands: list[str] = []
+        self.gui_calls = 0
+
+    async def call(self, method, params=None):  # noqa: ANN001, ANN202
+        if method == "getGuiState":
+            self.gui_calls += 1
+            if self.fail_gui:
+                raise RuntimeError("getGuiState 不可用")
+            return self.screens[min(self.gui_calls - 1, len(self.screens) - 1)]
+        if method == "getStats":
+            return {"in_game": True, "position": {"x": 0.0, "y": 64.0, "z": 0.0}}
+        return {}
+
+    async def command(self, text: str):
+        self.commands.append(text)
+
+
+class TestScreenBarrier:
+    def test_waits_for_loading_screen_to_clear(self):
+        """T0b 根因复现：加载屏未消失时先等（轮询 getGuiState）再发 #goto，命令不丢。"""
+
+        async def main() -> None:
+            stub = ScreenStubClient([
+                {"screen_open": True, "in_game": True,
+                 "screen_class": "LevelLoadingScreen"},   # 第 1 次查：屏还在
+                {"screen_open": False},                     # 第 2 次查：已消失
+            ])
+            outcome = await Primitives(stub, poll_interval=0.02).walk_to(1.0, 0.0)
+            assert stub.gui_calls == 2          # 屏障等了一轮才放行
+            assert stub.commands == ["#goto 1 0"]  # 屏消失后命令才发出（T0b：之前会丢）
+            assert outcome.text.startswith("已走到")
+
+        asyncio.run(main())
+
+    def test_barrier_timeout_blocks_goto(self, monkeypatch):
+        """屏一直不消失：等到上限即教学式失败（先处理界面），绝不盲发 #goto。"""
+        monkeypatch.setattr(primitives_module, "WALK_SCREEN_BARRIER_TIMEOUT", 0.05)
+
+        async def main() -> None:
+            stub = ScreenStubClient([
+                {"screen_open": True, "in_game": True,
+                 "screen_class": "LevelLoadingScreen"},
+            ])
+            outcome = await Primitives(stub, poll_interval=0.02).walk_to(10.0, 8.0)
+            assert "界面被 LevelLoadingScreen 占用" in outcome.text
+            assert "处理界面" in outcome.text          # 建议行动：先处理界面
+            assert "重发 walkTo" in outcome.text
+            assert stub.commands == []                 # 没有发出任何命令
+
+        asyncio.run(main())
+
+    def test_gui_query_failure_does_not_block(self):
+        """getGuiState 查询失败：屏障视同无界面放行（防丢命令的措施不该反过来卡行走）。"""
+
+        async def main() -> None:
+            stub = ScreenStubClient([], fail_gui=True)
+            outcome = await Primitives(stub, poll_interval=0.02).walk_to(1.0, 0.0)
+            assert stub.gui_calls == 1                # 确实查过一次（失败）
+            assert "#goto 1 0" in stub.commands       # 放行
+            assert outcome.text.startswith("已走到")
+
+        asyncio.run(main())
+
+
 # ---------------------------------------------------------------------- dig_block
 
 

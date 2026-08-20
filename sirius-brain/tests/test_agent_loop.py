@@ -21,9 +21,13 @@ import pytest
 from pydantic import ValidationError
 
 from sirius_brain.agent import (
+    COLLECT_BLOCK_TOOL,
+    DIG_BLOCK_TOOL,
     FINISH_TOOL,
     PARTIAL_DONE_PREFIX,
+    STATUS_PREFIX,
     STOP_REPLY_TEXT,
+    WALK_TO_TOOL,
     AgentConfig,
     AgentLoop,
     SelfEchoFilter,
@@ -37,6 +41,7 @@ from sirius_brain.agent import (
     VLMResponse,
     VLMUsage,
     QwenVLM,
+    bridge_error_hint,
     default_registry,
     match_self_uuid,
 )
@@ -187,10 +192,11 @@ class TestToolRegistry:
         assert registry.names() == [
             "getStats", "getGuiState", "world.query", "screenshot", "lookAt",
             "input.mouseMove", "input.click", "input.key", "input.text",
+            WALK_TO_TOOL, DIG_BLOCK_TOOL, COLLECT_BLOCK_TOOL,
             "command", FINISH_TOOL,
         ]
         tools = registry.openai_tools()
-        assert len(tools) == 11
+        assert len(tools) == 14
         for tool in tools:
             assert tool["type"] == "function"
             function = tool["function"]
@@ -199,6 +205,50 @@ class TestToolRegistry:
             assert function["parameters"]["type"] == "object"
         # 工具表发出去的是 QwenVLM.chat 可直接消费的简写/完整形态
         assert tools[0]["function"]["name"] == "getStats"
+
+    def test_primitive_tools_contract_descriptions(self):
+        """M3.5：三原语注册在表，描述带 Numen 式契约（受理即执行/失败读建议/超时续做）。"""
+        registry = default_registry()
+        functions = {t["function"]["name"]: t["function"]
+                     for t in registry.openai_tools()}
+        walk = functions[WALK_TO_TOOL]
+        assert "受理即执行" in walk["description"]
+        assert "同参数重发" in walk["description"]          # 超时续走契约
+        assert walk["parameters"]["required"] == ["x", "z"]  # y 可选
+        dig = functions[DIG_BLOCK_TOOL]
+        assert "幂等" in dig["description"]                  # 已空=成功契约
+        assert dig["parameters"]["required"] == ["x", "y", "z"]
+        collect = functions[COLLECT_BLOCK_TOOL]
+        assert "有收获 = 成功" in collect["description"]      # 部分收契约
+        assert "#tag" in collect["description"]
+        ids = collect["parameters"]["properties"]["block_ids"]
+        assert ids["minItems"] == 1 and ids["maxItems"] == 16
+        assert collect["parameters"]["properties"]["count"] == {
+            "type": "integer", "minimum": 1, "maximum": 64,
+            "description": "要挖除的目标方块数"}
+
+    def test_primitive_params_validation_client_side(self):
+        """原语参数边界在本地 pydantic 就拒绝（不浪费 bridge 往返）。"""
+        registry = default_registry()
+        with pytest.raises(ValidationError):
+            asyncio.run(registry.execute(None, WALK_TO_TOOL, {"x": 1.0}))       # 缺 z
+        with pytest.raises(ValidationError):
+            asyncio.run(registry.execute(None, DIG_BLOCK_TOOL,
+                                         {"x": 1.5, "y": 64, "z": 2}))         # 非整数
+        with pytest.raises(ValidationError):
+            asyncio.run(registry.execute(None, COLLECT_BLOCK_TOOL,
+                                         {"block_ids": [], "count": 1}))       # 空列表
+        with pytest.raises(ValidationError):
+            asyncio.run(registry.execute(None, COLLECT_BLOCK_TOOL,
+                                         {"block_ids": ["a"] * 17, "count": 1}))  # >16 条
+        with pytest.raises(ValidationError):
+            asyncio.run(registry.execute(None, COLLECT_BLOCK_TOOL,
+                                         {"block_ids": ["a"], "count": 65}))   # count 上限
+
+    def test_default_registry_cancel_optional(self):
+        """default_registry(cancel=None) 向后兼容（独立使用/测试不可取消）。"""
+        registry = default_registry()
+        assert WALK_TO_TOOL in registry and len(registry) == 14
 
     def test_parameters_from_frozen_schema_files(self):
         registry = default_registry()
@@ -490,6 +540,76 @@ class TestRunTask:
         assert "已截断" in truncated
         assert AgentLoop._truncate("短文本") == "短文本"
 
+    def test_rolling_status_replaced_not_accumulated(self):
+        """M3.5 滚动状态：每步 VLM 调用前注入一条〔当前状态〕（替换式，不累积历史）。"""
+
+        async def main() -> None:
+            server = RecordingMock(two_player_scene(), port=0)
+            await server.start()
+            client = BridgeClient(server.url)
+            vlm = ScriptedVLM([
+                resp_tools(("getStats", {})),
+                resp_tools(("getStats", {})),
+                resp_tools((FINISH_TOOL, {"result": "完事"})),
+            ])
+            agent = make_agent(client, vlm)
+            try:
+                await client.connect()
+                run = await agent.run_task("走三步")
+                assert run.end_reason == "finish"
+                # 每一步发给 VLM 的历史里都恰有一条状态消息（首步也有，搭车从第 1 步开始）
+                assert len(vlm.captured) == 3
+                for messages in vlm.captured:
+                    status = [m for m in messages
+                              if m.get("role") == "user"
+                              and isinstance(m.get("content"), str)
+                              and m["content"].startswith(STATUS_PREFIX)]
+                    assert len(status) == 1, "状态消息必须替换而非累积"
+                    assert status[0]["content"] == (
+                        f"{STATUS_PREFIX}位置(100.5,64.0,-200.5) 生命20 饥饿20 氧气300")
+                # 状态消息位于历史末尾（紧跟上一轮工具结果，下一步调用前注入）
+                assert vlm.captured[-1][-1]["content"].startswith(STATUS_PREFIX)
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_system_prompt_contains_layered_contract(self):
+        """M3.5 系统提示分层契约：原语优先/键鼠兜底/边界契约/安全约束都真实到达 VLM。"""
+
+        async def main() -> None:
+            server = RecordingMock(two_player_scene(), port=0)
+            await server.start()
+            client = BridgeClient(server.url)
+            vlm = ScriptedVLM([resp_text("收到")])
+            agent = make_agent(client, vlm)
+            try:
+                await client.connect()
+                await agent.run_task("测试提示")
+                prompt = vlm.captured[0][0]["content"]  # 首条 system 消息
+                # 任务级原语优先 + 键鼠兜底的分层引导
+                assert "任务级原语优先" in prompt
+                for name in (WALK_TO_TOOL, DIG_BLOCK_TOOL, COLLECT_BLOCK_TOOL):
+                    assert name in prompt
+                assert "兜底" in prompt
+                # 边界契约
+                assert "range ≤64" in prompt
+                assert "filter 1..16" in prompt
+                assert "限频 20/s" in prompt
+                assert "hold_ms" in prompt
+                assert "gui-scaled" in prompt
+                assert "#tag" in prompt
+                assert "Baritone" in prompt
+                # 安全约束节保留
+                assert "禁止攻击任何玩家或实体" in prompt
+                assert "当前任务" in prompt and "测试提示" in prompt
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
 
 # ---------------------------------------------------------------------- 双人全流程 / 急停
 
@@ -604,6 +724,60 @@ class TestTwoPlayerFlow:
         asyncio.run(main())
 
 
+# ---------------------------------------------------------------------- M3.5 配置 / 接线 / 错误映射
+
+
+class _BarrierStubClient:
+    """Primitives 接口的最小无服务器 client：getGuiState 恒报被占用屏（cancel 接线验证用）。"""
+
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    async def call(self, method, params=None):  # noqa: ANN001, ANN202
+        if method == "getGuiState":
+            return {"screen_open": True, "in_game": True,
+                    "screen_class": "LevelLoadingScreen"}
+        if method == "getStats":
+            return {"in_game": True, "position": {"x": 0.0, "y": 64.0, "z": 0.0}}
+        return {}
+
+    async def command(self, text: str):
+        self.commands.append(text)
+
+
+class TestM35Wiring:
+    def test_budget_default_500k(self):
+        """M3.5：token 预算默认 500k（原语下沉后调用数骤降，200k 会误伤复杂探索任务）。"""
+        assert LoopConfig().max_total_tokens == 500_000
+
+    def test_bridge_error_hint_semantics(self):
+        """错误码 → 建议动作映射（模型读文本可自救）。"""
+        assert "range≤64" in bridge_error_hint(-32602)
+        assert "filter 1..16" in bridge_error_hint(-32602)
+        assert "限频" in bridge_error_hint(-32010)
+        assert "20/s" in bridge_error_hint(-32010)
+        assert "稍等再试" in bridge_error_hint(-32010)
+        assert "input_enabled" in bridge_error_hint(-32011)   # 输入关闭语义说明
+        assert "权限分级" in bridge_error_hint(-32012)         # 权限拒绝语义说明
+        assert bridge_error_hint(-32000) == ""                 # 未知码不加建议
+
+    def test_loop_default_registry_cancel_binds_stop_flag(self):
+        """AgentLoop 默认注册表：原语 cancel 绑 _stop_requested（急停≤1s 的接线离线验证）。"""
+
+        async def main() -> None:
+            client = BridgeClient("ws://127.0.0.1:1")
+            agent = AgentLoop(client, ScriptedVLM([resp_text("x")]),
+                              AgentConfig(vlm=VLMConfig(api_key="sk-test")))
+            stub = _BarrierStubClient()
+            agent._stop_requested = True
+            outcome = await agent.registry.execute(stub, WALK_TO_TOOL,
+                                                   {"x": 10.0, "z": 8.0})
+            assert "行走已中止" in outcome.text    # 屏障等待的微步里即感知急停
+            assert stub.commands == []             # 尚未发 #goto，命令不丢也绝不发错
+
+        asyncio.run(main())
+
+
 # ---------------------------------------------------------------------- CLI
 
 
@@ -640,3 +814,4 @@ class TestCli:
         assert config2.bridge.url == "ws://127.0.0.1:9999"
         assert config2.bridge.token == "tok123"
         assert config2.loop.max_steps == 25
+        assert config2.loop.max_total_tokens == 500_000  # M3.5 新默认

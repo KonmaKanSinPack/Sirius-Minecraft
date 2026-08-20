@@ -173,9 +173,11 @@ class LoopConfig:
     max_steps: int = 25
     # 连续两次 VLM 调用之间的最小间隔（秒）；0 = 不限
     min_interval: float = 0.0
-    # 单任务 token 预算（按各步 VLM usage.total_tokens 累计；默认宽松不束缚正常任务）。
-    # M3-B 增补字段（简报预留项），纯新增不影响既有构造
-    max_total_tokens: int = 200_000
+    # 单任务 token 预算（按各步 VLM usage.total_tokens 累计）。
+    # M3.5（2026-08-20）200k→500k：任务级原语下沉后单任务的 VLM 调用数骤降
+    # （M3 砍树 22 步 → 目标 ≤4 步），200k 会在复杂探索任务上误伤；500k 作为
+    # 复杂探索任务的硬上限，仍能兜住失控循环
+    max_total_tokens: int = 500_000
 
     def __post_init__(self) -> None:
         if self.max_steps < 1:

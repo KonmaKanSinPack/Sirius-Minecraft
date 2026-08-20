@@ -43,6 +43,9 @@ WALK_ARRIVE_DIST = 2.0
 #: 距离无进展看门狗（秒）：Baritone 绕路/卡跳沿时距离可能暂时不减，15s 足以区分
 #: "绕路中"与"真卡死"；触发后只重发一次 #goto（Numen 近重试档，MoveToCompanionTask）
 WALK_STALL_SECONDS = 15.0
+#: 发 #goto 前的界面屏障等待上限（秒）。T0b 教训（reports/M3.5-T0b.md）：quickPlay
+#: 入世后世界加载屏未消失时，T 键打不开聊天框，#goto 静默丢失——等屏消失再发令
+WALK_SCREEN_BARRIER_TIMEOUT = 10.0
 
 #: dig_block 默认超时（秒）：8 段挖掘（见 DIG_MAX_SEGMENTS）约 9s，30s 上限留足余量
 DIG_TIMEOUT = 30.0
@@ -121,6 +124,11 @@ class Primitives:
     async def _walk_to(self, x: float, z: float, *, y: float | None = None,
                        timeout: float = WALK_TIMEOUT,
                        cancel: CancelFlag = None) -> _StepResult:
+        # 0) 界面屏障（T0b 教训）：加载/覆盖屏未消失时聊天框打不开，#goto 会静默
+        #    丢失——先等屏消失再发令（collect_block 的走位也经此路径，同样受保护）
+        barrier = await self._wait_screen_clear(cancel=cancel)
+        if barrier is not None:
+            return barrier
         # y 缺省走两参形式（Baritone 自动落地面），给了走三参形式
         goto_cmd = (f"#goto {_fmt(x)} {_fmt(y)} {_fmt(z)}" if y is not None
                     else f"#goto {_fmt(x)} {_fmt(z)}")
@@ -183,6 +191,54 @@ class Primitives:
         return _StepResult(
             False, f"行走已中止（#stop 已发送）：当前位于 ({_fmt(px)}, {_fmt(py)}, {_fmt(pz)})，"
                    f"距目标 {dist:.1f} 格；需要继续时同参数重发 walkTo 即可续走")
+
+    async def _wait_screen_clear(self, *, cancel: CancelFlag = None,
+                                 timeout: float | None = None) -> _StepResult | None:
+        """发 #goto 前的界面屏障：轮询等待任意已打开的 screen 消失（T0b 教训）。
+
+        判定按 getGuiState 的 ``screen_open``（非 null screen 就等）：具体类名里哪些算
+        "加载/覆盖类"不可靠（模组可自定义 screen 类），宁可多等一轮也不丢命令。
+        返回 None = 已无界面，可以发令；返回 _StepResult = 失败文案（等待超时/被取消）。
+        """
+        if timeout is None:
+            timeout = WALK_SCREEN_BARRIER_TIMEOUT
+        started = time.monotonic()
+        seen: str | None = None  # 最近一次观测到的占用界面（解除时留档日志用）
+        while True:
+            screen_class = await self._screen_class()
+            if screen_class is None:
+                if seen is not None:
+                    logger.info("walk_to 屏障解除：等待 %.1fs 后 %s 已消失",
+                                time.monotonic() - started, seen)
+                return None
+            seen = screen_class
+            if cancel is not None and cancel():
+                logger.info("walk_to 屏障等待中被取消：界面仍被 %s 占用", screen_class)
+                return _StepResult(
+                    False, f"行走已中止：等待界面 {screen_class} 消失期间收到停止指令"
+                           f"（尚未开始行走，未发 #goto）")
+            if time.monotonic() - started > timeout:
+                logger.warning("walk_to 屏障等待 %.0fs 超时：界面仍被 %s 占用，不发 #goto",
+                               timeout, screen_class)
+                return _StepResult(
+                    False, f"界面被 {screen_class} 占用（等待 {timeout:.0f}s 未消失），"
+                           f"此时发命令会丢失；先用 getGuiState 查看并处理界面"
+                           f"（必要时按 ESC 关闭），再重发 walkTo")
+            await asyncio.sleep(self.poll_interval)
+
+    async def _screen_class(self) -> str | None:
+        """getGuiState → 当前占用屏幕的类名（无屏 → None）。
+
+        调用失败视同无屏放行（屏障是尽力而为的防丢命令措施，不该反过来阻塞行走）。
+        """
+        try:
+            result = await self.client.call("getGuiState")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("getGuiState 调用失败（屏障视同无界面）：%s", exc)
+            return None
+        if isinstance(result, dict) and result.get("screen_open"):
+            return str(result.get("screen_class") or "unknown")
+        return None
 
     # ------------------------------------------------------------------ dig_block
 
@@ -389,6 +445,7 @@ __all__ = [
     "DIG_SETTLE",
     "DIG_TIMEOUT",
     "WALK_ARRIVE_DIST",
+    "WALK_SCREEN_BARRIER_TIMEOUT",
     "WALK_STALL_SECONDS",
     "WALK_TIMEOUT",
 ]
