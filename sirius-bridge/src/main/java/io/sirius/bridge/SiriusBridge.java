@@ -56,6 +56,12 @@ public class SiriusBridge {
 
     /** Starts the server once the client finished its initial loading. */
     private void onClientTick(ClientTickEvent.Post event) {
+        // M3.5 v1.2 per-tick pumps: the smooth-turn controller and the dig
+        // monitor advance here (main thread; no-ops when idle) - they must
+        // run whether or not the server has started, so they sit BEFORE the
+        // early return, riding this same listener.
+        TurnController.onClientTick();
+        DigTools.onClientTick();
         if (server != null) {
             // M2-B: the event push channel's tick sampler (danger states ~1/s,
             // screenshot stream grabs ~1Hz while subscribed) rides the same

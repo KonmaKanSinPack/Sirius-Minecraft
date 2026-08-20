@@ -56,6 +56,7 @@ public final class SmokeMain {
         streamLadder();
         guiContracts();
         lookContracts();
+        digContracts();
         permissionContracts();
 
         System.out.println();
@@ -686,6 +687,26 @@ public final class SmokeMain {
         check(!item.getAsJsonObject().has("health"),
                 "contracts: NaN health omitted from entity entry");
 
+        // --- filterEntities: item entities carry the dropped stack's registry
+        // id + count (T7); non-item entities keep the exact pre-T7 shape
+        List<ToolContracts.EntityFact> dropFacts = List.of(
+                new ToolContracts.EntityFact("d-1", "Diamond", "minecraft:item",
+                        2, 64, 1, Float.NaN, "minecraft:oak_log", 3),
+                new ToolContracts.EntityFact("d-2", "Zombie", "minecraft:zombie",
+                        3, 64, 1, 8f));
+        JsonObject drops = ToolContracts.filterEntities(dropFacts, 0, 64, 0, 8, null);
+        JsonObject dropEntry = drops.get("entities").getAsJsonArray().get(0).getAsJsonObject();
+        check(dropEntry.has("item")
+                        && "minecraft:oak_log".equals(dropEntry.get("item").getAsString())
+                        && dropEntry.get("count").getAsInt() == 3,
+                "contracts: item entity carries stack registry id + count (T7)");
+        JsonObject nonItemEntry = drops.get("entities").getAsJsonArray().get(1).getAsJsonObject();
+        check(!nonItemEntry.has("item") && !nonItemEntry.has("count"),
+                "contracts: non-item entity keeps the pre-T7 shape (no item/count)");
+        check(ToolContracts.filterEntities(dropFacts, 0, 64, 0, 16,
+                        List.of("minecraft:item")).get("count").getAsInt() == 1,
+                "contracts: entities type filter picks the item entity by type id");
+
         List<ToolContracts.EntityFact> crowd = new ArrayList<>();
         for (int i = 0; i < 200; i++) {
             crowd.add(new ToolContracts.EntityFact("u" + i, "E" + i, "minecraft:zombie", i % 4, 64, 0, 1f));
@@ -805,6 +826,68 @@ public final class SmokeMain {
         check(miss.get("count").getAsInt() == 0 && miss.get("blocks").getAsJsonArray().size() == 0
                         && !miss.get("truncated").getAsBoolean(),
                 "contracts: filter with no matches -> empty, truncated false");
+
+        // --- T6 dense-scene regression (M3.5-T5a evidence): a NEAR match must
+        // survive a filtered query with far more than 512 matches. Player at
+        // (0.5,64.5,0.5) - i.e. standing INSIDE block (0,64,0) (distSq 0) with
+        // a second match at distSq 1; the rel-band filler yields ~1700 farther
+        // matches across the cube (x ascending - the same corner order that
+        // made the unfiltered v1.0 path drop near blocks at range>=5.5).
+        // Collect-all + sort must keep the two nearest regardless.
+        ToolContracts.BlockProbe dense = (x, y, z) -> {
+            if (x == 0 && y == 65 && z == 0) return "minecraft:oak_log"; // distSq 1 - the "3.71-block target" stand-in
+            if (x == 0 && y == 64 && z == 0) return "minecraft:oak_log"; // distSq 0 - block at the player's feet
+            int rel = x + (y - 64) + z;
+            return rel >= -5 && rel <= 5 ? "minecraft:oak_log" : null; // ~1700 farther fillers
+        };
+        JsonObject denseQuery = ToolContracts.scanBlocks(0.5, 64.5, 0.5, 8, dense,
+                ToolContracts.BlockFilter.parse(List.of("minecraft:oak_log")), null);
+        JsonArray denseBlocks = denseQuery.get("blocks").getAsJsonArray();
+        boolean nearKept = false;
+        for (JsonElement e : denseBlocks) {
+            JsonObject b = e.getAsJsonObject();
+            nearKept |= b.get("x").getAsInt() == 0 && b.get("y").getAsInt() == 65 && b.get("z").getAsInt() == 0;
+        }
+        check(denseQuery.get("count").getAsInt() == ToolContracts.FILTERED_BLOCKS_CAP
+                        && denseQuery.get("truncated").getAsBoolean()
+                        && denseBlocks.get(0).getAsJsonObject().get("x").getAsInt() == 0
+                        && denseBlocks.get(0).getAsJsonObject().get("y").getAsInt() == 64
+                        && denseBlocks.get(0).getAsJsonObject().get("z").getAsInt() == 0
+                        && nearKept,
+                "contracts: T6 dense filtered query keeps the NEAREST matches despite >512 matches");
+
+        // containment law (the T5a suggested regression): a smaller range's
+        // hits must all appear in the bigger range's (truncated) result -
+        // truncation may only ever drop the FAR tail.
+        ToolContracts.BlockProbe sparse = (x, y, z) ->
+                ((y == 64 || y == 65) && Math.abs(x) <= 6 && Math.abs(z) <= 6
+                        && (x + z) % 2 == 0) ? "minecraft:oak_log" : null;
+        JsonObject smallRange = ToolContracts.scanBlocks(0.5, 64.5, 0.5, 1.5, sparse,
+                ToolContracts.BlockFilter.parse(List.of("minecraft:oak_log")), null);
+        JsonObject bigRange = ToolContracts.scanBlocks(0.5, 64.5, 0.5, 6.4, sparse,
+                ToolContracts.BlockFilter.parse(List.of("minecraft:oak_log")), null);
+        java.util.Set<String> bigSet = new java.util.HashSet<>();
+        for (JsonElement e : bigRange.get("blocks").getAsJsonArray()) {
+            JsonObject b = e.getAsJsonObject();
+            bigSet.add(b.get("x") + "," + b.get("y") + "," + b.get("z"));
+        }
+        boolean contained = !smallRange.get("blocks").getAsJsonArray().isEmpty();
+        for (JsonElement e : smallRange.get("blocks").getAsJsonArray()) {
+            JsonObject b = e.getAsJsonObject();
+            contained &= bigSet.contains(b.get("x") + "," + b.get("y") + "," + b.get("z"));
+        }
+        check(contained && !smallRange.get("truncated").getAsBoolean()
+                        && bigRange.get("truncated").getAsBoolean(),
+                "contracts: T6 small-range hits are contained in the big-range result (truncation drops only the far tail)");
+
+        // memory guard: a pathological filter over a solid cube flags truncated
+        // at the guard without building an unbounded list
+        ToolContracts.BlockProbe solid = (x, y, z) -> "minecraft:stone";
+        JsonObject guarded = ToolContracts.scanBlocks(0.5, 64.5, 0.5, 64, solid,
+                ToolContracts.BlockFilter.parse(List.of("minecraft:stone")), null);
+        check(guarded.get("count").getAsInt() == ToolContracts.FILTERED_BLOCKS_CAP
+                        && guarded.get("truncated").getAsBoolean(),
+                "contracts: T6 filtered memory guard flags truncated on pathological filters");
     }
 
     // ------------------------------------------------------------------ M2-B: events
@@ -1260,6 +1343,234 @@ public final class SmokeMain {
         check(!absent.get("in_game").getAsBoolean() && !absent.get("looked").getAsBoolean()
                         && absent.keySet().size() == 2,
                 "look results: not-in-game shape is exactly {in_game:false, looked:false}");
+    }
+
+    // ------------------------------------------------------------------ M3.5 v1.2: dig + smooth turn
+
+    private static void digContracts() throws Exception {
+        // --- dig params
+        DigContracts.DigParams p = validParams(() -> DigContracts.digParams(
+                json("{\"x\":11,\"y\":63,\"z\":26}")));
+        check(p.x() == 11 && p.y() == 63 && p.z() == 26
+                        && p.timeoutMs() == DigContracts.DEFAULT_TIMEOUT_MS,
+                "dig: integer coords parsed, timeout defaults to " + DigContracts.DEFAULT_TIMEOUT_MS);
+        p = validParams(() -> DigContracts.digParams(
+                json("{\"x\":-5,\"y\":0,\"z\":3.0,\"timeout_ms\":600}")));
+        check(p.x() == -5 && p.timeoutMs() == 600, "dig: negative/whole-float coords + min timeout accepted");
+        p = validParams(() -> DigContracts.digParams(
+                json("{\"x\":0,\"y\":64,\"z\":0,\"timeout_ms\":30000}")));
+        check(p.timeoutMs() == 30000, "dig: max timeout boundary accepted");
+        p = validParams(() -> DigContracts.digParams(
+                json("{\"x\":0,\"y\":64,\"z\":0,\"timeout_ms\":null}")));
+        check(p.timeoutMs() == DigContracts.DEFAULT_TIMEOUT_MS, "dig: explicit null timeout -> default");
+        expectInvalid(() -> DigContracts.digParams(json("{}")), "dig: missing coords rejected");
+        expectInvalid(() -> DigContracts.digParams(json("{\"x\":1,\"y\":2}")), "dig: missing z rejected");
+        expectInvalid(() -> DigContracts.digParams(json("{\"x\":1.5,\"y\":2,\"z\":3}")),
+                "dig: fractional coord rejected");
+        expectInvalid(() -> DigContracts.digParams(json("{\"x\":\"1\",\"y\":2,\"z\":3}")),
+                "dig: string coord rejected");
+        expectInvalid(() -> DigContracts.digParams(json("{\"x\":1,\"y\":2,\"z\":3,\"timeout_ms\":599}")),
+                "dig: timeout below min rejected");
+        expectInvalid(() -> DigContracts.digParams(json("{\"x\":1,\"y\":2,\"z\":3,\"timeout_ms\":30001}")),
+                "dig: timeout above max rejected");
+        expectInvalid(() -> DigContracts.digParams(json("{\"x\":1,\"y\":2,\"z\":3,\"timeout_ms\":1000.5}")),
+                "dig: fractional timeout rejected");
+
+        // --- result shapes
+        JsonObject broken = DigContracts.digResult(DigContracts.RESULT_BROKEN, "minecraft:oak_log",
+                3210L, true, null);
+        check(broken.get("in_game").getAsBoolean()
+                        && "broken".equals(broken.get("result").getAsString())
+                        && "minecraft:oak_log".equals(broken.get("block").getAsString())
+                        && broken.get("elapsed_ms").getAsLong() == 3210L
+                        && broken.get("broken_via_occluder").getAsBoolean() && !broken.has("reason"),
+                "dig results: broken + via_occluder shape");
+        JsonObject air = DigContracts.digResult(DigContracts.RESULT_ALREADY_AIR, null, 4L, null, null);
+        check(air.get("block").isJsonNull() && !air.has("broken_via_occluder"),
+                "dig results: already_air carries null block");
+        JsonObject blocked = DigContracts.digResult(DigContracts.RESULT_BLOCKED_LIQUID, "minecraft:stone",
+                9L, null, "liquid minecraft:water at neighbor 12,63,26 would flow in");
+        check("blocked_liquid".equals(blocked.get("result").getAsString())
+                        && blocked.get("reason").getAsString().contains("water"),
+                "dig results: blocked_* carries the reason");
+
+        // --- monitor: aim -> press -> break (the happy path)
+        DigContracts.DigMonitor m = new DigContracts.DigMonitor(15000, false);
+        DigContracts.TickView aiming = new DigContracts.TickView(false, false, false, false, 0);
+        DigContracts.TickView aimed = new DigContracts.TickView(true, false, false, false, 0);
+        DigContracts.TickView pressing = new DigContracts.TickView(true, false, false, true, 100);
+        check(m.tick(aiming).action() == DigContracts.Action.WAIT, "dig monitor: waits while aiming");
+        DigContracts.Verdict press = m.tick(aimed);
+        check(press.action() == DigContracts.Action.PRESS, "dig monitor: presses once aim converges");
+        DigContracts.Verdict hold = m.tick(pressing);
+        check(hold.action() == DigContracts.Action.HOLD, "dig monitor: holds while destroying");
+        DigContracts.Verdict done = m.tick(new DigContracts.TickView(true, true, false, false, 3000));
+        check(done.action() == DigContracts.Action.FINISH
+                        && DigContracts.RESULT_BROKEN.equals(done.result()) && !done.viaOccluder(),
+                "dig monitor: block change -> FINISH broken");
+
+        // --- monitor: target already gone during aiming -> idempotent broken
+        m = new DigContracts.DigMonitor(15000, false);
+        done = m.tick(new DigContracts.TickView(false, true, false, false, 50));
+        check(done.action() == DigContracts.Action.FINISH
+                        && DigContracts.RESULT_BROKEN.equals(done.result()),
+                "dig monitor: target gone while aiming -> broken (someone else broke it)");
+
+        // --- monitor: occluder tolerance + broken_via_occluder (the T5a leaves-in-front case)
+        m = new DigContracts.DigMonitor(15000, false);
+        m.tick(aimed); // PRESS
+        boolean held = true;
+        for (int i = 0; i < 80; i++) { // 4s of chewing a leaf occluder, stage active, hit NOT on target
+            DigContracts.Verdict v = m.tick(new DigContracts.TickView(true, false, true, true, 100 + i * 50));
+            held &= v.action() == DigContracts.Action.HOLD;
+        }
+        DigContracts.Verdict through = m.tick(new DigContracts.TickView(true, true, true, false, 4200));
+        check(held, "dig monitor: occluder hit NEVER fails the dig (hysteresis)");
+        check(through.action() == DigContracts.Action.FINISH
+                        && DigContracts.RESULT_BROKEN.equals(through.result()) && through.viaOccluder(),
+                "dig monitor: broken after occluder -> via_occluder=true");
+        // hit jitter during AIMING must NOT count as an occluder (crosshair sweeps)
+        DigContracts.DigMonitor aimOnly = new DigContracts.DigMonitor(15000, false);
+        aimOnly.tick(new DigContracts.TickView(false, false, true, false, 0)); // WAIT (aiming, occluder hit)
+        DigContracts.Verdict noOccluder = aimOnly.tick(new DigContracts.TickView(true, true, false, false, 100));
+        check(!noOccluder.viaOccluder(),
+                "dig monitor: occluder hit during AIMING is not tracked as via_occluder");
+
+        // --- monitor: aim stall guard (view never lands -> not_digging, not a bare timeout)
+        m = new DigContracts.DigMonitor(15000, false);
+        DigContracts.Verdict stalled = null;
+        for (int i = 0; i < DigContracts.AIM_STALL_TICKS; i++) {
+            stalled = m.tick(new DigContracts.TickView(false, false, false, false, i * 50));
+        }
+        check(stalled.action() == DigContracts.Action.FINISH
+                        && DigContracts.RESULT_NOT_DIGGING.equals(stalled.result()),
+                "dig monitor: aim stall for " + DigContracts.AIM_STALL_TICKS + " ticks -> not_digging (fail fast)");
+
+        // --- monitor: not_digging telemetry early-stop (stage -1 for 40 pressing ticks)
+        m = new DigContracts.DigMonitor(15000, false);
+        m.tick(aimed); // PRESS
+        DigContracts.Verdict last = null;
+        for (int i = 1; i <= DigContracts.NOT_DIGGING_TICKS; i++) {
+            last = m.tick(new DigContracts.TickView(true, false, false, false, i * 50));
+        }
+        check(last.action() == DigContracts.Action.FINISH
+                        && DigContracts.RESULT_NOT_DIGGING.equals(last.result()),
+                "dig monitor: 40 consecutive idle-stage ticks -> not_digging");
+        // stage flicker resets the streak
+        m = new DigContracts.DigMonitor(15000, false);
+        m.tick(aimed);
+        DigContracts.Action a39 = null;
+        for (int i = 1; i <= 39; i++) {
+            a39 = m.tick(new DigContracts.TickView(true, false, false, i % 5 == 0, i * 50)).action();
+        }
+        check(a39 == DigContracts.Action.HOLD,
+                "dig monitor: intermittent stage activity resets the not-digging streak");
+
+        // --- monitor: timeout (also while aiming)
+        m = new DigContracts.DigMonitor(15000, false);
+        DigContracts.Verdict to = m.tick(new DigContracts.TickView(false, false, false, false, 15000));
+        check(to.action() == DigContracts.Action.FINISH
+                        && DigContracts.RESULT_TIMEOUT.equals(to.result()),
+                "dig monitor: elapsed >= timeout_ms -> timeout");
+        m = new DigContracts.DigMonitor(15000, false);
+        m.tick(aimed);
+        to = m.tick(new DigContracts.TickView(true, false, false, true, 15100));
+        check(to.action() == DigContracts.Action.FINISH
+                        && DigContracts.RESULT_TIMEOUT.equals(to.result()),
+                "dig monitor: timeout outranks an active stage");
+
+        // --- monitor: insta-mine short press (protects the block behind)
+        m = new DigContracts.DigMonitor(15000, true);
+        m.tick(aimed); // PRESS
+        boolean shortHold = true;
+        for (int i = 1; i < DigContracts.INSTA_PRESS_TICKS; i++) {
+            shortHold &= m.tick(new DigContracts.TickView(true, false, false, true, i * 50)).action()
+                    == DigContracts.Action.HOLD;
+        }
+        DigContracts.Verdict unpress = m.tick(new DigContracts.TickView(true, false, false, true, 150));
+        check(shortHold && unpress.action() == DigContracts.Action.UNPRESS,
+                "dig monitor: insta-mine holds " + DigContracts.INSTA_PRESS_TICKS + " ticks then unpresses");
+        DigContracts.Verdict instaBroken = m.tick(new DigContracts.TickView(true, true, false, false, 250));
+        check(instaBroken.action() == DigContracts.Action.FINISH
+                        && DigContracts.RESULT_BROKEN.equals(instaBroken.result()),
+                "dig monitor: insta-mine break lands during verify -> broken");
+        // ...and when the insta press misses: bounded retries then not_digging
+        m = new DigContracts.DigMonitor(15000, true);
+        int presses = 0;
+        DigContracts.Verdict v = null;
+        for (int i = 0; i < 200 && (v == null || v.action() != DigContracts.Action.FINISH); i++) {
+            v = m.tick(new DigContracts.TickView(true, false, false, false, i * 50 + 100));
+            if (v.action() == DigContracts.Action.PRESS) {
+                presses++;
+            }
+        }
+        check(v.action() == DigContracts.Action.FINISH
+                        && DigContracts.RESULT_NOT_DIGGING.equals(v.result())
+                        && presses == DigContracts.INSTA_MAX_PRESSES,
+                "dig monitor: failed insta presses bounded at " + DigContracts.INSTA_MAX_PRESSES
+                        + " then not_digging");
+
+        // --- smooth-turn math (v1.2)
+        check(LookContracts.yawDelta(0, 180) == -180.0 && LookContracts.yawDelta(0, -180) == -180.0,
+                "turn math: exactly-180 deltas reduce to -180 (vanilla [-180,180) wrap; turns left)");
+        check(LookContracts.yawDelta(0, 190) == -170.0 && LookContracts.yawDelta(350, 10) == 20.0,
+                "turn math: yawDelta wraps the short way round");
+        check(LookContracts.approach(10, 5, 15) == 15.0 && LookContracts.approach(10, -5, 15) == 5.0,
+                "turn math: approach clamps to maxStep");
+        check(LookContracts.approach(10, 3, 15) == 13.0 && LookContracts.approach(10, -20, 15) == -5.0,
+                "turn math: approach lands exactly when within one step");
+        check(LookContracts.turnConverged(-0.5, 10.9, 0, 10)
+                        && !LookContracts.turnConverged(1.5, 10, 0, 10)
+                        && !LookContracts.turnConverged(0, 11.5, 0, 10),
+                "turn math: convergence window is <1 deg on both axes");
+        check(LookContracts.maxTurnMs(300) == 2700L && LookContracts.maxTurnMs(30) == 13500L,
+                "turn math: maxTurnMs = 360deg/speed + 1.5s slack");
+        check(DigContracts.DIG_AIM_TURN_SPEED_DEG_S == 300.0,
+                "turn math: dig aims at 300 deg/s (the T6 ruling)");
+
+        // --- lookAt turn_speed_deg_s params (v1.2)
+        LookContracts.LookAtParams q = validParams(() -> LookContracts.lookAtParams(
+                json("{\"x\":1,\"y\":2,\"z\":3}")));
+        check(q.turnSpeedDegS() == null, "lookAt: absent turn_speed -> instant (v1.0 behaviour)");
+        q = validParams(() -> LookContracts.lookAtParams(
+                json("{\"x\":1,\"y\":2,\"z\":3,\"turn_speed_deg_s\":null}")));
+        check(q.turnSpeedDegS() == null, "lookAt: explicit null turn_speed -> instant");
+        q = validParams(() -> LookContracts.lookAtParams(
+                json("{\"x\":1,\"y\":2,\"z\":3,\"turn_speed_deg_s\":300}")));
+        check(q.turnSpeedDegS() == 300.0, "lookAt: turn_speed 300 parsed");
+        q = validParams(() -> LookContracts.lookAtParams(
+                json("{\"x\":1,\"y\":2,\"z\":3,\"turn_speed_deg_s\":30}")));
+        check(q.turnSpeedDegS() == 30.0, "lookAt: turn_speed min boundary 30 accepted");
+        q = validParams(() -> LookContracts.lookAtParams(
+                json("{\"x\":1,\"y\":2,\"z\":3,\"turn_speed_deg_s\":720}")));
+        check(q.turnSpeedDegS() == 720.0, "lookAt: turn_speed max boundary 720 accepted");
+        q = validParams(() -> LookContracts.lookAtParams(
+                json("{\"x\":1,\"y\":2,\"z\":3,\"turn_speed_deg_s\":180.5}")));
+        check(q.turnSpeedDegS() == 180.5, "lookAt: fractional turn_speed accepted (number, not integer)");
+        expectInvalid(() -> LookContracts.lookAtParams(
+                json("{\"x\":1,\"y\":2,\"z\":3,\"turn_speed_deg_s\":29.9}")),
+                "lookAt: turn_speed below 30 rejected");
+        expectInvalid(() -> LookContracts.lookAtParams(
+                json("{\"x\":1,\"y\":2,\"z\":3,\"turn_speed_deg_s\":721}")),
+                "lookAt: turn_speed above 720 rejected");
+        expectInvalid(() -> LookContracts.lookAtParams(
+                json("{\"x\":1,\"y\":2,\"z\":3,\"turn_speed_deg_s\":\"300\"}")),
+                "lookAt: string turn_speed rejected");
+
+        // --- smooth lookAt result shape
+        JsonObject smooth = LookContracts.lookAtSmoothResult(1, 2, 3, -15.5, 22.25, 7.5, true, 620L);
+        check(smooth.get("converged").getAsBoolean() && smooth.get("elapsed_ms").getAsLong() == 620L
+                        && smooth.get("distance").getAsDouble() == 7.5,
+                "lookAt results: smooth result carries converged + elapsed_ms");
+
+        // --- PermissionContracts re-check for dig's class: dig rides Action.INPUT
+        // (the input_world tier allows it without a screen - same as input.*;
+        // full matrix covered by permissionContracts() below)
+        check(PermissionContracts.allows(PermissionContracts.Tier.INPUT_WORLD, false,
+                        PermissionContracts.Action.INPUT)
+                        && PermissionContracts.deniedRegardlessOfScreen(
+                        PermissionContracts.Tier.INPUT_GUI, PermissionContracts.Action.LOOK),
+                "dig tier: dig rides the INPUT action class (input_world: yes without a screen)");
     }
 
     private static void permissionContracts() {

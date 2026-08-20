@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "dig({ x, y, z, timeout_ms? })。M3.5 v1.2 智能挖掘原语（bridge 侧执行）。\n\nbridge 平滑瞄准（300 deg/s）→ 监视型按住左键 → 主信号（方块变化）判\nbroken/timeout/not_digging；挖前安全检查（邻格液体/上方 falling block）拒绝\nblocked_liquid/blocked_falling；已空返回 already_air（幂等成功）。\ntimeout_ms 600..30000，缺省 15000。",
+  "properties": {
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    },
+    "z": {
+      "title": "Z",
+      "type": "integer"
+    },
+    "timeout_ms": {
+      "anyOf": [
+        {
+          "maximum": 30000,
+          "minimum": 600,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Timeout Ms"
+    }
+  },
+  "required": [
+    "x",
+    "y",
+    "z"
+  ],
+  "title": "DigParams",
+  "type": "object"
+}

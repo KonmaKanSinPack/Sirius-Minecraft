@@ -18,7 +18,9 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.food.FoodData;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
@@ -237,12 +239,24 @@ final class PerceptionTools {
                 if (entity instanceof LivingEntity living && living.getHealth() > 0.0F) {
                     health = living.getHealth();
                 }
+                // T7: item entities carry the dropped stack's registry id + size.
+                // The display name is client-localized and cannot be matched
+                // against block/item ids brain-side, so the registry id rides
+                // along - the same reason blocks report "minecraft:oak_log".
+                String item = null;
+                int itemCount = 0;
+                if (entity instanceof ItemEntity itemEntity) {
+                    ItemStack stack = itemEntity.getItem();
+                    var itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
+                    item = itemId != null ? itemId.toString() : "unknown";
+                    itemCount = stack.getCount();
+                }
                 facts.add(new ToolContracts.EntityFact(
                         entity.getStringUUID(),
                         entity.getName().getString(),
                         EntityType.getKey(entity.getType()).toString(),
                         entity.getX(), entity.getY(), entity.getZ(),
-                        health));
+                        health, item, itemCount));
             }
             return ToolContracts.filterEntities(facts, player.getX(), player.getY(), player.getZ(),
                     p.range(), p.filter());

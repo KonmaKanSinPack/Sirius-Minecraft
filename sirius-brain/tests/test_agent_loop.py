@@ -221,6 +221,10 @@ class TestToolRegistry:
         collect = functions[COLLECT_BLOCK_TOOL]
         assert "有收获 = 成功" in collect["description"]      # 部分收契约
         assert "#tag" in collect["description"]
+        # T7：拾取可配置（默认捡，挖通道/清理地形传 false）
+        assert "pickup" in collect["description"]
+        assert collect["parameters"]["properties"]["pickup"]["type"] == "boolean"
+        assert collect["parameters"]["required"] == ["block_ids", "count"]  # pickup 可选
         ids = collect["parameters"]["properties"]["block_ids"]
         assert ids["minItems"] == 1 and ids["maxItems"] == 16
         assert collect["parameters"]["properties"]["count"] == {

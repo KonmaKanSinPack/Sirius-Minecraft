@@ -65,7 +65,8 @@ TOOL_HINTS: dict[str, str] = {
     "getGuiState": "查看当前打开的界面（背包/箱子/聊天框等）：widget 树与容器槽位"
                    "（含物品注册名与数量）。注意：槽位坐标是 gui-scaled，"
                    "input.mouseMove 收窗口像素，需按比例换算后使用",
-    "world.query": "查询自己附近的实体（type=entities，含 uuid/名字/类型/坐标/生命）"
+    "world.query": "查询自己附近的实体（type=entities，含 uuid/名字/类型/坐标/生命；"
+                   "掉落物实体另带物品注册名 item 与数量 count）"
                    "或非空气方块（type=blocks）；range 为半径（格）",
     "screenshot": "截取当前游戏画面；图像会附加在下一条消息里供你查看",
     "lookAt": "把视线转到世界坐标 (x,y,z)（绝对转视角，用于看向目标/瞄准）",
@@ -96,7 +97,9 @@ PRIMITIVE_TOOL_HINTS: dict[str, str] = {
         "按方块 ID 收集 count 个：自动在 64 格范围内找最近的、走过去、挖掉，循环到收满"
         "或范围内清空——不需要坐标。block_ids 支持 registry 名与 #tag 写法"
         "（如 #minecraft:logs），同一物品的全部变体都要列上（如 iron_ore 和 "
-        "deepslate_iron_ore）。契约：范围内已挖完但不足 count 且有收获 = 成功"
+        "deepslate_iron_ore）。挖掉后会顺路捡起匹配的掉落物并附在结果里"
+        "（pickup，默认 true）；挖通道/清理地形等不要掉落物时传 pickup=false。"
+        "契约：范围内已挖完但不足 count 且有收获 = 成功"
         "（文本会说明挖到几个）；范围内一个都没有 = 失败（建议确认 ID 或走近些）；"
         "超时时同参数重发可续做",
 }
@@ -141,12 +144,15 @@ class DigBlockParams(BaseModel):
 
 
 class CollectBlockParams(BaseModel):
-    """collectBlock({block_ids, count})：任务级采集原语（找最近→走位→挖，循环）。"""
+    """collectBlock({block_ids, count, pickup?})：任务级采集原语（找最近→走位→挖→拾取，循环）。"""
 
     # 1..16 条与 bridge world.query filter 的契约对齐（条数超限本地即拒绝）
     block_ids: list[str] = Field(min_length=1, max_length=16)
     # 1..64：单次任务的合理上限（防一次调用挖穿整个矿脉预算）
     count: int = Field(ge=1, le=64)
+    # T7：挖掉后是否顺路捡起匹配的掉落物（要获得目标物品 = True 默认；
+    # 挖通道/清理地形等不要掉落物 = False，如圆石一路捡会拖慢挖掘）
+    pickup: bool = True
 
 
 # ---------------------------------------------------------------------- 注册表
@@ -325,7 +331,8 @@ def _primitive_factories(cancel: Callable[[], bool] | None) -> tuple[ToolHandler
 
     async def collect_block(client: Any, args: dict[str, Any]) -> ToolOutcome:
         return await Primitives(client).collect_block(
-            args["block_ids"], args["count"], cancel=cancel)
+            args["block_ids"], args["count"],
+            pickup=args.get("pickup", True), cancel=cancel)
 
     return walk_to, dig_block, collect_block
 
@@ -400,6 +407,12 @@ def default_registry(cancel: Callable[[], bool] | None = None) -> ToolRegistry:
                 },
                 "count": {"type": "integer", "minimum": 1, "maximum": 64,
                           "description": "要挖除的目标方块数"},
+                "pickup": {
+                    "type": "boolean",
+                    "description": "挖掉方块后是否走过去捡起匹配的掉落物"
+                                   "（默认 true）；要获得目标物品时用默认，"
+                                   "挖通道/清理地形等不要掉落物时传 false",
+                },
             },
             "required": ["block_ids", "count"],
         },

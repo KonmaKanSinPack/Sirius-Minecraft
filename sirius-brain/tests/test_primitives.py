@@ -12,10 +12,12 @@
 
 import asyncio
 import math
+import time
 
 from sirius_brain.agent import Primitives
 from sirius_brain.agent import primitives as primitives_module
 from sirius_brain.bridge import BridgeClient
+from sirius_brain.bridge.client import BridgeError
 from sirius_brain.mock import FakeWorldBridge
 
 ORIGIN = {"x": 0.0, "y": 64.0, "z": 0.0}
@@ -50,6 +52,24 @@ async def flip_flag_after(flag: dict, delay: float) -> None:
     """delay 秒后把 flag["stop"] 置 True（取消测试的急停触发器）。"""
     await asyncio.sleep(delay)
     flag["stop"] = True
+
+
+class NoDigClient:
+    """包装 client：把 dig 调用按旧 jar 行为拒绝（-32601 not implemented）——
+    驱动 primitives 的 fallback 段循环路径（其余方法透传）。"""
+
+    def __init__(self, inner: BridgeClient) -> None:
+        self.inner = inner
+        self.dig_attempts = 0
+
+    async def call(self, method, params=None):  # noqa: ANN001, ANN202
+        if method == "dig":
+            self.dig_attempts += 1
+            raise BridgeError(-32601, "not implemented: dig")
+        return await self.inner.call(method, params)
+
+    async def command(self, text: str, **kwargs):  # noqa: ANN202
+        return await self.inner.command(text, **kwargs)
 
 
 # ---------------------------------------------------------------------- FakeWorldBridge 行为（单元）
@@ -272,7 +292,8 @@ class TestScreenBarrier:
 
 class TestDigBlock:
     def test_dig_success(self):
-        """触及范围内：lookAt 中心 → hold 600ms 左键 → 方块消失，成功话术带 registry 名。"""
+        """触及范围内：一次 bridge dig RPC（自带瞄准+按住）→ 方块消失，话术带 registry 名。
+        T6 后走 bridge 智能原语：wire 上只有 dig 调用，无 lookAt/input.click 编排。"""
 
         async def main() -> None:
             server = FakeWorldBridge(port=0, position={"x": 4.5, "y": 64.0, "z": 2.5},
@@ -282,8 +303,33 @@ class TestDigBlock:
                 outcome = await Primitives(client).dig_block(3, 64, 2)
                 assert outcome.text == "已挖掉 minecraft:spruce_log（3,64,2）"
                 assert (3, 64, 2) not in server.blocks
-                assert server.looks[-1] == (3.5, 64.5, 2.5)      # 看向方块中心
-                assert server.clicks[-1] == {"button": 0, "hold_ms": 600}
+                # bridge 路径：dig 一次到位（timeout_ms 封顶 30s 协议上限），无段循环
+                assert len(server.digs) == 1
+                assert server.digs[0]["x"] == 3 and server.digs[0]["y"] == 64
+                assert server.digs[0]["z"] == 2
+                assert server.digs[0]["timeout_ms"] == primitives_module.DIG_BRIDGE_TIMEOUT_MS
+                assert not server.looks and not server.clicks  # 瞄准/按住在 bridge 侧
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_dig_through_occluder_notes_it(self):
+        """遮挡场景：眼位→中心连线穿过树叶 → fake 连遮挡一起移除并标
+        broken_via_occluder；话术带"视线先穿过遮挡物"（T6 契约）。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position={"x": 4.5, "y": 64.0, "z": 2.5},
+                                     blocks={(3, 64, 2): "oak_log",
+                                             (4, 65, 2): "oak_leaves"})
+            client = await make_pair(server)
+            try:
+                outcome = await Primitives(client).dig_block(3, 64, 2)
+                assert outcome.text.startswith("已挖掉 minecraft:oak_log")
+                assert "遮挡" in outcome.text
+                assert (3, 64, 2) not in server.blocks   # 目标挖掉
+                assert (4, 65, 2) not in server.blocks   # 遮挡树叶也穿掉了
             finally:
                 await client.close()
                 await server.close()
@@ -291,7 +337,7 @@ class TestDigBlock:
         asyncio.run(main())
 
     def test_dig_too_far_teaches_walk_first(self):
-        """超触及：教学式失败（先 walkTo 旁边），不动键鼠、方块原样保留。
+        """超触及：教学式失败（先 walkTo 旁边），不动键鼠、不发 dig，方块原样保留。
         感知范围外的目标不能被误报成"已空"——同样教先走位。"""
 
         async def main() -> None:
@@ -306,11 +352,12 @@ class TestDigBlock:
                 assert "minecraft:spruce_log" in outcome.text  # 看得见就报是什么方块
                 assert (10, 64, 10) in server.blocks
                 assert not server.looks and not server.clicks  # 未盲挖
+                assert not server.digs  # 触及检查在本地完成，RPC 都没发
 
                 far = await Primitives(client).dig_block(100, 64, 100)  # 感知范围外
                 assert "远超触及与感知范围" in far.text
                 assert "walkTo" in far.text
-                assert not server.looks and not server.clicks
+                assert not server.looks and not server.clicks and not server.digs
             finally:
                 await client.close()
                 await server.close()
@@ -327,16 +374,15 @@ class TestDigBlock:
             try:
                 outcome = await Primitives(client).dig_block(3, 64, 2)  # 这里没有方块
                 assert "已不存在" in outcome.text
-                assert not server.clicks
+                assert not server.clicks and not server.digs
             finally:
                 await client.close()
                 await server.close()
 
         asyncio.run(main())
 
-    def test_dig_unbreakable_teaches_after_8_segments(self, monkeypatch):
-        """挖不破（bedrock）：8 段后教学式失败，不无限空挖。"""
-        monkeypatch.setattr(primitives_module, "DIG_SETTLE", 0.02)
+    def test_dig_unbreakable_teaches_tools(self):
+        """挖不破（bedrock）：bridge 回 timeout → 教学"工具不足/被保护"，不无限空挖。"""
 
         async def main() -> None:
             server = FakeWorldBridge(port=0, position={"x": 4.5, "y": 64.0, "z": 2.5},
@@ -344,6 +390,56 @@ class TestDigBlock:
             client = await make_pair(server)
             try:
                 outcome = await Primitives(client).dig_block(3, 64, 2)
+                assert "无法破坏" in outcome.text
+                assert "工具不足" in outcome.text or "保护" in outcome.text
+                assert (3, 64, 2) in server.blocks
+                assert len(server.digs) == 1  # 一次 dig 调用就得出结论（无段循环）
+                assert not server.clicks
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_dig_falls_back_to_hold_loop_on_old_bridge(self, monkeypatch):
+        """旧 jar（无 dig 工具，回 -32601）：记忆后回退本地 lookAt+hold 段循环——
+        T5a 修复的段递增逻辑在 fallback 路径原样保留。"""
+        monkeypatch.setattr(primitives_module, "DIG_SETTLE", 0.02)
+        monkeypatch.setattr(primitives_module, "DIG_CLICK_HOLD_MS", 150)
+        monkeypatch.setattr(primitives_module, "DIG_CLICK_HOLD_MAX_MS", 150)
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position={"x": 4.5, "y": 64.0, "z": 2.5},
+                                     blocks={(3, 64, 2): "spruce_log"})
+            client = await make_pair(server)
+            no_dig = NoDigClient(client)
+            prims = Primitives(no_dig)
+            try:
+                outcome = await prims.dig_block(3, 64, 2)
+                assert outcome.text == "已挖掉 minecraft:spruce_log（3,64,2）"
+                assert (3, 64, 2) not in server.blocks
+                # fallback 路径走的是段循环：lookAt + input.click(hold_ms) 上 wire
+                assert server.looks[-1] == (3.5, 64.5, 2.5)
+                assert server.clicks[-1] == {"button": 0, "hold_ms": 150}
+                assert prims._dig_supported is False  # 记忆：后续不再试调 dig
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_dig_fallback_unbreakable_after_8_segments(self, monkeypatch):
+        """fallback 段循环的 8 段上限（旧路径回归）：bedrock 8 段后教学式失败。"""
+        monkeypatch.setattr(primitives_module, "DIG_SETTLE", 0.02)
+        monkeypatch.setattr(primitives_module, "DIG_CLICK_HOLD_MS", 150)
+        monkeypatch.setattr(primitives_module, "DIG_CLICK_HOLD_MAX_MS", 150)
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position={"x": 4.5, "y": 64.0, "z": 2.5},
+                                     blocks={(3, 64, 2): "bedrock"})
+            client = await make_pair(server)
+            try:
+                outcome = await Primitives(NoDigClient(client)).dig_block(3, 64, 2)
                 assert "无法破坏" in outcome.text
                 assert "遮挡" in outcome.text or "工具不足" in outcome.text
                 assert (3, 64, 2) in server.blocks
@@ -359,9 +455,11 @@ class TestDigBlock:
 
 
 class TestCollectBlock:
-    def test_full_chain_with_tag_filter(self):
+    def test_full_chain_with_tag_filter(self, monkeypatch):
         """组合场景：collect 3 块 #logs（spruce×2 + oak×1）完整链路——
-        query(filter=#tag) → 最近 → walk_to 邻近 → dig_block，循环到收满。"""
+        query(filter=#tag) → 最近 → walk_to 邻近 → dig_block，循环到收满。
+        T7 起挖后自动拾取：每挖一块捡走它掉的掉落物，话术末尾附拾取注记。"""
+        monkeypatch.setattr(primitives_module, "DIG_CLICK_HOLD_MS", 150)
 
         async def main() -> None:
             server = FakeWorldBridge(
@@ -372,18 +470,20 @@ class TestCollectBlock:
             client = await make_pair(server)
             try:
                 outcome = await Primitives(client).collect_block(["#logs"], 3)
-                assert outcome.text == "已挖到 3/3 个 #logs"
+                assert outcome.text == "已挖到 3/3 个 #logs，已捡起 3 个掉落"
                 assert not server.blocks  # 三块全挖掉
+                assert not server.item_drops  # 三个掉落也全捡走（T7）
                 gotos = [line for line in server.submitted if line.startswith("#goto")]
-                assert len(gotos) >= 3    # 每块一次走位
+                assert len(gotos) >= 6    # 每块一次走位 + 每个掉落一次拾取走位
             finally:
                 await client.close()
                 await server.close()
 
         asyncio.run(main())
 
-    def test_partial_collect_is_success(self):
+    def test_partial_collect_is_success(self, monkeypatch):
         """部分收：2/5 后范围内清空 → 仍算成功，话术说明"已无更多"。"""
+        monkeypatch.setattr(primitives_module, "DIG_CLICK_HOLD_MS", 150)
 
         async def main() -> None:
             server = FakeWorldBridge(port=0, position=dict(ORIGIN),
@@ -414,6 +514,255 @@ class TestCollectBlock:
                 assert "#tag" in outcome.text  # 写法提示
                 assert not [line for line in server.submitted if line.startswith("#goto")]
                 assert (3, 64, 2) in server.blocks  # 石头无辜
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+
+# ---------------------------------------------------------------------- 挖后拾取（T7）
+
+
+def add_drop(server: FakeWorldBridge, uuid: str, item: str,
+             x: float, y: float, z: float, **flags: object) -> None:
+    """往假世界塞一个掉落物实体（模拟别人掉的/环境掉的；挖出来的由 dig 自动生成）。"""
+    server.item_drops[uuid] = {
+        "uuid": uuid, "name": item, "type": "minecraft:item",
+        "item": item, "count": 1,
+        "position": {"x": x, "y": y, "z": z}, **flags,
+    }
+
+
+class ThirdPartyPickupClient:
+    """包装 client：第 2 次 entities 查询（拾取走位后的复核）前清空掉落物表——
+    模拟别人抢先捡走：驱动"实体消失 = 已拾取（无论谁捡的）"的 Numen 语义分支
+    （配合 server.drop_no_absorb=True，掉落物只能被这个清空动作移除）。"""
+
+    def __init__(self, inner: BridgeClient, server: FakeWorldBridge) -> None:
+        self.inner = inner
+        self.server = server
+        self.entities_queries = 0
+
+    async def call(self, method, params=None):  # noqa: ANN001, ANN202
+        if (method == "world.query" and isinstance(params, dict)
+                and params.get("type") == "entities"):
+            self.entities_queries += 1
+            if self.entities_queries == 2:
+                self.server.item_drops.clear()  # 别人捡走了（含我们的目标）
+        return await self.inner.call(method, params)
+
+    async def command(self, text: str, **kwargs):  # noqa: ANN202
+        return await self.inner.command(text, **kwargs)
+
+
+class TestFakeWorldDrops:
+    def test_dig_spawns_drop_entities_query_and_absorb(self):
+        """FakeWorldBridge T7 物源：dig 掉方块 → 原地生成 item 实体（带注册名与
+        count，2 格外不掉）；玩家走上去 → 轮询时吸附消失（vanilla 拾取近似）。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position={"x": 4.5, "y": 64.0, "z": 2.5},
+                                     blocks={(3, 64, 2): "oak_log"})
+            client = await make_pair(server)
+            try:
+                before = await client.call("world.query",
+                                           {"type": "entities", "range": 8,
+                                            "filter": ["item"]})
+                assert before["count"] == 0
+                await client.call("dig", {"x": 3, "y": 64, "z": 2})
+                result = await client.call("world.query",
+                                           {"type": "entities", "range": 8})
+                assert result["count"] == 1 and not result["truncated"]
+                drop = result["entities"][0]
+                assert drop["type"] == "minecraft:item"
+                assert drop["item"] == "minecraft:oak_log"  # 注册名（T7 契约）
+                assert drop["count"] == 1
+                assert "uuid" in drop and "position" in drop
+                # 走到掉落物上（getStats/world.query 轮询触发吸附）→ 实体消失
+                await client.command("#goto 3.5 2.5")
+                await asyncio.sleep(1.2)
+                after = await client.call("world.query",
+                                          {"type": "entities", "range": 8})
+                assert after["count"] == 0
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+
+class TestCollectBlockPickup:
+    def test_collect_picks_up_own_drops(self):
+        """T7 主场景：挖掉后掉落物躺在旁边 2 格（不掉）→ collect 顺路走过去吸附，
+        话术附"已捡起"，掉落物表清空。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN),
+                                     blocks={(6, 64, 0): "oak_log"})
+            client = await make_pair(server)
+            try:
+                outcome = await Primitives(client).collect_block(["oak_log"], 1)
+                assert outcome.text == "已挖到 1/1 个 oak_log，已捡起 1 个掉落"
+                assert not server.blocks and not server.item_drops
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_foreign_drops_untouched(self):
+        """多人服礼仪：匹配不上的掉落（别人的/树叶掉的树苗）绝对不碰——只走自己的
+        目标掉落，别人的原地保留。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN),
+                                     blocks={(6, 64, 0): "oak_log"})
+            add_drop(server, "foreign-sapling", "minecraft:oak_sapling", 6.5, 64.5, 2.5)
+            add_drop(server, "foreign-stone", "minecraft:stone", 8.5, 64.5, 0.5)
+            client = await make_pair(server)
+            try:
+                outcome = await Primitives(client).collect_block(["oak_log"], 1)
+                assert "已捡起 1 个掉落" in outcome.text  # 只捡了自己的原木
+                assert set(server.item_drops) == {"foreign-sapling", "foreign-stone"}
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_drop_beyond_dig_zone_ignored(self):
+        """挖点 4 格外的匹配掉落不捡（可能是别人挖的——多人服礼仪的另一面）。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN),
+                                     blocks={(6, 64, 0): "oak_log"})
+            add_drop(server, "far-log", "minecraft:oak_log", 11.5, 64.5, 0.5)  # 距挖点 5 格
+            client = await make_pair(server)
+            try:
+                outcome = await Primitives(client).collect_block(["oak_log"], 1)
+                assert outcome.text == "已挖到 1/1 个 oak_log，已捡起 1 个掉落"
+                assert set(server.item_drops) == {"far-log"}  # 远处的不碰
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_vanished_entity_counts_as_picked(self):
+        """别人抢先捡走（实体在复核查询前被移除）：实体消失 = 已拾取（无论谁捡的）。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN),
+                                     blocks={(6, 64, 0): "oak_log"})
+            server.drop_no_absorb = True  # 物理吸附关闭：掉落物只能被 wrapper 移除
+            client = await make_pair(server)
+            third_party = ThirdPartyPickupClient(client, server)
+            try:
+                outcome = await Primitives(third_party).collect_block(["oak_log"], 1)
+                assert third_party.entities_queries >= 2  # 复核查询确实发生了
+                assert "已捡起 1 个掉落" in outcome.text
+                assert not server.item_drops
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_unabsorbable_drop_skipped_no_loop(self):
+        """skip 防死循环：走到掉落物身旁（≤1.2 格）仍没吸上 → 记 skip 后正常收尾，
+        不会对着同一个实体无限走（远早于 PICKUP_TIMEOUT 兜底）。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN),
+                                     blocks={(6, 64, 0): "oak_log"})
+            server.drop_no_absorb = True
+            client = await make_pair(server)
+            try:
+                started = time.monotonic()
+                outcome = await Primitives(client).collect_block(["oak_log"], 1)
+                elapsed = time.monotonic() - started
+                assert outcome.text == "已挖到 1/1 个 oak_log"  # 没捡到：无拾取注记
+                assert elapsed < primitives_module.PICKUP_TIMEOUT  # skip 生效，非超时兜底
+                assert len(server.item_drops) == 1  # 够不着的还躺在地上
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_collect_without_pickup_leaves_drops(self):
+        """pickup=False（挖通道/清理地形场景）：挖后不拾取，掉落物留在原地。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN),
+                                     blocks={(6, 64, 0): "oak_log"})
+            client = await make_pair(server)
+            try:
+                outcome = await Primitives(client).collect_block(["oak_log"], 1,
+                                                                 pickup=False)
+                assert outcome.text == "已挖到 1/1 个 oak_log"
+                assert len(server.item_drops) == 1  # 掉落物原地保留
+                # 也没有为拾取发起走位：#goto 只有 1 次（挖位走位）
+                gotos = [line for line in server.submitted if line.startswith("#goto")]
+                assert len(gotos) == 1
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+
+class TestPickupMethod:
+    def test_pickup_sweeps_matching_drops_only(self):
+        """pickup()：范围内按注册名捡匹配掉落（Numen collect_items 对应物）；
+        不匹配的保留；走位顺序取离自己最近的。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN))
+            add_drop(server, "drop-a", "minecraft:oak_log", 3.5, 64.5, 0.5)
+            add_drop(server, "drop-b", "minecraft:oak_log", -3.5, 64.5, 0.5)
+            add_drop(server, "drop-c", "minecraft:stick", 0.5, 64.5, 4.5)
+            client = await make_pair(server)
+            prims = Primitives(client)
+            try:
+                outcome = await prims.pickup(["minecraft:oak_log"])
+                assert outcome.text == "已捡起 2 个 minecraft:oak_log"
+                assert set(server.item_drops) == {"drop-c"}  # 木棍不碰（礼仪）
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_pickup_zero_items_is_success(self):
+        """范围内没有匹配掉落 = 成功收尾（Numen：0 件也是有效答案）。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN))
+            add_drop(server, "drop-c", "minecraft:stick", 0.5, 64.5, 2.5)
+            client = await make_pair(server)
+            try:
+                outcome = await Primitives(client).pickup(["minecraft:diamond"])
+                assert "没有可捡的" in outcome.text
+                assert set(server.item_drops) == {"drop-c"}
+            finally:
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_pickup_tag_only_ids_rejected_gently(self):
+        """#tag 条目无法在 item 注册名上展开（无 item tag 查询通道）：教学文案，
+        不发起任何走位。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN))
+            client = await make_pair(server)
+            try:
+                outcome = await Primitives(client).pickup(["#minecraft:logs"])
+                assert "非 #tag" in outcome.text
+                assert not [line for line in server.submitted if line.startswith("#goto")]
             finally:
                 await client.close()
                 await server.close()

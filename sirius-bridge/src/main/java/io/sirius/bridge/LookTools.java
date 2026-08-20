@@ -72,6 +72,9 @@ final class LookTools {
             if (player == null) {
                 return LookContracts.notInGameLook(); // title screen etc.: not an error
             }
+            // An instant look overrides any smooth turn in flight - otherwise
+            // the ticking turn would fight this direct write next tick.
+            TurnController.supersedeActive();
             float previousYaw = player.getYRot();
             float previousPitch = player.getXRot();
             applyRotation(player, p.yaw(), p.pitch());
@@ -97,11 +100,16 @@ final class LookTools {
             return permissionDenied(ctx, guard, "lookAt", p.x() + "," + p.y() + "," + p.z(), false);
         }
 
+        if (p.turnSpeedDegS() != null) {
+            return lookAtSmooth(ctx, p);
+        }
+
         JsonObject result = PerceptionTools.callOnMainThread(ctx, () -> {
             LocalPlayer player = Minecraft.getInstance().player;
             if (player == null) {
                 return LookContracts.notInGameLook();
             }
+            TurnController.supersedeActive(); // instant write wins over any smooth turn
             Vec3 eye = player.getEyePosition(); // (x, y + eyeHeight, z) - the EYES anchor
             double[] rotation = LookContracts.rotationTowards(
                     eye.x, eye.y, eye.z, p.x(), p.y(), p.z());
@@ -112,6 +120,43 @@ final class LookTools {
         return Json.okResponse(ctx.id(), result);
     }
 
+    /**
+     * The v1.2 smooth {@code lookAt} ({@code turn_speed_deg_s}): starts a
+     * fixed-angular-speed turn on the main thread, blocks the WS thread on
+     * the turn's latch, and reports {@code converged}/{@code elapsed_ms}. A
+     * newer look supersedes the turn - the old caller wakes with
+     * {@code converged:false} instead of hanging.
+     */
+    private static JsonObject lookAtSmooth(ToolContext ctx, LookContracts.LookAtParams p) throws Exception {
+        final double[] distanceBox = new double[1];
+        final TurnController.Turn turn = PerceptionTools.callOnMainThread(ctx, () -> {
+            LocalPlayer player = Minecraft.getInstance().player;
+            if (player == null) {
+                return null;
+            }
+            Vec3 eye = player.getEyePosition();
+            double[] rotation = LookContracts.rotationTowards(
+                    eye.x, eye.y, eye.z, p.x(), p.y(), p.z());
+            distanceBox[0] = rotation[2];
+            return TurnController.begin(rotation[0], rotation[1], p.turnSpeedDegS());
+        });
+        if (turn == null) {
+            return Json.okResponse(ctx.id(), LookContracts.notInGameLook());
+        }
+        // Worst-case turn (360 deg at this speed) + slack; the controller
+        // self-expires on the same bound, so the latch always releases.
+        boolean completed = turn.await(LookContracts.maxTurnMs(p.turnSpeedDegS()) + 500);
+        boolean converged = completed && turn.isConverged();
+        long elapsedMs = turn.elapsedMs();
+        ctx.audit("INPUT", summary("lookAt", p.x() + "," + p.y() + "," + p.z())
+                + " turn_speed_deg_s=" + p.turnSpeedDegS()
+                + " result=" + (converged ? "turned" : "interrupted")
+                + " elapsed_ms=" + elapsedMs);
+        return Json.okResponse(ctx.id(), LookContracts.lookAtSmoothResult(
+                p.x(), p.y(), p.z(), turn.finalYaw, turn.finalPitch, distanceBox[0],
+                converged, elapsedMs));
+    }
+
     // ------------------------------------------------------------------ helpers
 
     /**
@@ -119,9 +164,10 @@ final class LookTools {
      * does: the setters (NaN-guarded), the interpolation fields kept in sync
      * (otherwise the next rendered frame smears from the old rotation) and
      * the head rotation so the body/head do not decouple for a frame. MUST
-     * run on the client main thread.
+     * run on the client main thread. Package-private: {@link TurnController}
+     * reuses it for its per-tick smooth-turn writes.
      */
-    private static void applyRotation(LocalPlayer player, double yaw, double pitch) {
+    static void applyRotation(LocalPlayer player, double yaw, double pitch) {
         player.setYRot((float) yaw);
         player.setXRot((float) pitch);
         player.yRotO = player.getYRot();

@@ -8,7 +8,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.PriorityQueue;
 import java.util.Set;
 
 /**
@@ -314,6 +313,16 @@ public final class ToolContracts {
     public static final int FILTERED_BLOCKS_CAP = 32;
 
     /**
+     * Memory guard for the filtered scan's collect-all phase (T6): the whole
+     * cube's matches are collected before sorting, so a pathological filter
+     * (e.g. a 64-range query over solid stone filtering for stone) must not
+     * build an unbounded list. 4096 matches is far beyond any real decision
+     * round (32 are returned); hitting the guard flags {@code truncated:true}
+     * exactly like exceeding the response cap.
+     */
+    public static final int FILTERED_MATCH_GUARD = 4096;
+
+    /**
      * Block access for {@link #scanBlocks(int, int, int, double, BlockProbe)}:
      * returns the block's registry name ("minecraft:stone") or {@code null}
      * for air / unloaded chunk. Implemented over {@code ClientLevel.getBlockState}
@@ -411,24 +420,24 @@ public final class ToolContracts {
     }
 
     /**
-     * FILTERED cubic scan (v1.1): same cube as the v1.0 scan around the
-     * player's exact position ({@code floor(px)..}, radius {@code ceil(range)}),
-     * but only blocks matching {@code filter} are reported, ordered by squared
-     * distance to the player (block CENTER {@code x+0.5,y+0.5,z+0.5} vs
-     * {@code px,py,pz} - the same point lookAt aims at), ascending. Cap
-     * {@link #FILTERED_BLOCKS_CAP}; more matches than that -> the NEAREST ones
-     * win and {@code truncated:true}.
+     * FILTERED cubic scan (v1.1, T6 truncation fix): same cube as the v1.0
+     * scan around the player's exact position ({@code floor(px)..}, radius
+     * {@code ceil(range)}), but only blocks matching {@code filter} are
+     * reported, ordered by squared distance to the player (block CENTER
+     * {@code x+0.5,y+0.5,z+0.5} vs {@code px,py,pz} - the same point lookAt
+     * aims at), ascending. Cap {@link #FILTERED_BLOCKS_CAP}; more matches
+     * than that -> the NEAREST ones win and {@code truncated:true}.
      *
-     * <p><b>Why the whole cube is still probed:</b> scan order is x-then-y-then-z,
-     * not distance order, so breaking early at 32 matches (like the unfiltered
-     * path does at 512) would keep an arbitrary spatial corner, not the nearest
-     * blocks - the very bug this extension exists to avoid. Instead a bounded
-     * max-heap (root = farthest kept) holds at most 32 hits: once full, a new
-     * match only enters when strictly nearer than the root, evicting it. Every
-     * position still gets {@code probe.blockAt} called (we cannot know a far
-     * position is a dropped MATCH without probing it, and truncated must only
-     * flag dropped matches), but bookkeeping per position stays O(1) and the
-     * response is bounded regardless of how many blocks match.
+     * <p><b>T6 fix (M3.5-T5a evidence):</b> the filtered path now collects
+     * ALL matches first (bounded only by the {@link #FILTERED_MATCH_GUARD}
+     * memory guard), THEN sorts by distance, THEN caps. The previous bounded
+     * heap kept the nearest 32 incrementally, which was distance-correct but
+     * still enumerated-and-dropped matches mid-scan; the collect-all shape
+     * makes "truncated means the nearest 32 are exact" trivially auditable,
+     * and the smoke test pins the dense-scene regression (a near target must
+     * survive a >512-match query - the T5a symptom where range 5.5 lost a
+     * 3.71-block target that range 4.0 could see). The unfiltered v1.0 path
+     * keeps its documented stop-at-512 semantics untouched.
      */
     public static JsonObject scanBlocks(double px, double py, double pz, double range,
                                         BlockProbe probe, BlockFilter filter, TagProbe tagProbe) {
@@ -436,11 +445,9 @@ public final class ToolContracts {
         int cy = (int) Math.floor(py);
         int cz = (int) Math.floor(pz);
         int r = (int) Math.ceil(range);
-        // max-heap on distSq: the root is the farthest of the kept matches,
-        // i.e. the eviction candidate once the heap reaches the cap.
-        PriorityQueue<BlockHit> nearest = new PriorityQueue<>(
-                Comparator.comparingDouble(BlockHit::distSq).reversed());
+        List<BlockHit> matches = new ArrayList<>();
         boolean truncated = false;
+        scan:
         for (int x = cx - r; x <= cx + r; x++) {
             for (int y = cy - r; y <= cy + r; y++) {
                 for (int z = cz - r; z <= cz + r; z++) {
@@ -460,31 +467,30 @@ public final class ToolContracts {
                     if (!match) {
                         continue;
                     }
+                    if (matches.size() >= FILTERED_MATCH_GUARD) {
+                        truncated = true; // memory guard: some match went uncollected
+                        break scan;
+                    }
                     double dx = x + 0.5 - px;
                     double dy = y + 0.5 - py;
                     double dz = z + 0.5 - pz;
-                    BlockHit hit = new BlockHit(dx * dx + dy * dy + dz * dz, x, y, z, name);
-                    if (nearest.size() >= FILTERED_BLOCKS_CAP) {
-                        truncated = true; // this match or the evicted one is dropped
-                        if (hit.distSq() >= nearest.peek().distSq()) {
-                            continue; // not nearer than the 32 kept - stays dropped
-                        }
-                        nearest.poll();
-                    }
-                    nearest.add(hit);
+                    matches.add(new BlockHit(dx * dx + dy * dy + dz * dz, x, y, z, name));
                 }
             }
         }
 
         // Ascending distance; ties broken by (x,y,z) so the order is
         // deterministic (symmetric positions share distSq all the time).
-        List<BlockHit> hits = new ArrayList<>(nearest);
-        hits.sort(Comparator.comparingDouble(BlockHit::distSq)
+        matches.sort(Comparator.comparingDouble(BlockHit::distSq)
                 .thenComparingInt(BlockHit::x)
                 .thenComparingInt(BlockHit::y)
                 .thenComparingInt(BlockHit::z));
+        if (matches.size() > FILTERED_BLOCKS_CAP) {
+            truncated = true; // more matches than the response cap - the tail is dropped
+            matches = new ArrayList<>(matches.subList(0, FILTERED_BLOCKS_CAP));
+        }
         JsonArray blocks = new JsonArray();
-        for (BlockHit hit : hits) {
+        for (BlockHit hit : matches) {
             JsonObject block = new JsonObject();
             block.addProperty("x", hit.x());
             block.addProperty("y", hit.y());
@@ -500,9 +506,24 @@ public final class ToolContracts {
         return result;
     }
 
-    /** Entity data extracted on the main thread; {@code health} is NaN when unknown. */
+    /**
+     * Entity data extracted on the main thread; {@code health} is NaN when
+     * unknown. {@code item}/{@code count} (T7) are only set for
+     * {@code minecraft:item} entities - the dropped stack's registry id and
+     * stack size; {@code null}/0 for everything else. The display {@code name}
+     * is client-localized ("橡木原木") and therefore useless for brain-side
+     * id matching, exactly why the registry id rides along (same philosophy as
+     * blocks reporting {@code minecraft:oak_log}).
+     */
     public record EntityFact(String uuid, String name, String type,
-                             double x, double y, double z, float health) {
+                             double x, double y, double z, float health,
+                             String item, int count) {
+
+        /** Non-item entity convenience (item fields default to null/0). */
+        public EntityFact(String uuid, String name, String type,
+                          double x, double y, double z, float health) {
+            this(uuid, name, type, x, y, z, health, null, 0);
+        }
     }
 
     /**
@@ -551,6 +572,12 @@ public final class ToolContracts {
             entity.add("position", position);
             if (!Float.isNaN(fact.health())) {
                 entity.addProperty("health", fact.health());
+            }
+            if (fact.item() != null) {
+                // T7 pure addition: item entities only. Non-item entries keep
+                // the exact pre-T7 shape (backwards compatible, additive).
+                entity.addProperty("item", fact.item());
+                entity.addProperty("count", fact.count());
             }
             entities.add(entity);
         }

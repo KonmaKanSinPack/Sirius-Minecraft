@@ -56,11 +56,24 @@ public final class LookContracts {
                 boundedNumber(params, "pitch", "look", PITCH_MIN, PITCH_MAX));
     }
 
-    /** Validated {@code lookAt} params: finite {@code x}/{@code y}/{@code z} (all REQUIRED). */
-    public record LookAtParams(double x, double y, double z) {
+    /**
+     * Validated {@code lookAt} params: finite {@code x}/{@code y}/{@code z}
+     * (all REQUIRED) plus the optional M3.5 v1.2 {@code turn_speed_deg_s}
+     * (null = the v1.0/v1.1 instant snap, fully backward compatible).
+     */
+    public record LookAtParams(double x, double y, double z, Double turnSpeedDegS) {
     }
 
-    /** Validates {@code lookAt} params per the frozen schema (finite numbers). */
+    /** Schema bounds for {@code lookAt.turn_speed_deg_s} (frozen schema v1.2). */
+    public static final double TURN_SPEED_MIN = 30.0;
+    public static final double TURN_SPEED_MAX = 720.0;
+
+    /**
+     * Validates {@code lookAt} params per the frozen schema: finite numbers
+     * {@code x}/{@code y}/{@code z} REQUIRED; optional numeric
+     * {@code turn_speed_deg_s} in [30, 720] deg/s (fractional allowed - the
+     * pydantic side declares a number, not an integer).
+     */
     public static LookAtParams lookAtParams(JsonObject params) throws ToolContracts.InvalidParams {
         Double x = finiteNumber(params, "x");
         Double y = finiteNumber(params, "y");
@@ -69,7 +82,24 @@ public final class LookContracts {
             throw new ToolContracts.InvalidParams("lookAt requires finite numeric x, y and z"
                     + " (the block/world position to look at)");
         }
-        return new LookAtParams(x, y, z);
+        Double speed = null;
+        JsonElement speedElement = params.get("turn_speed_deg_s");
+        if (speedElement != null && !speedElement.isJsonNull()) {
+            if (!speedElement.isJsonPrimitive() || !speedElement.getAsJsonPrimitive().isNumber()) {
+                throw new ToolContracts.InvalidParams("lookAt turn_speed_deg_s must be a number in ["
+                        + (int) TURN_SPEED_MIN + ", " + (int) TURN_SPEED_MAX + "] (degrees per second)");
+            }
+            double s = speedElement.getAsDouble();
+            if (!Double.isFinite(s)) {
+                throw new ToolContracts.InvalidParams("lookAt turn_speed_deg_s must be finite");
+            }
+            if (s < TURN_SPEED_MIN || s > TURN_SPEED_MAX) {
+                throw new ToolContracts.InvalidParams("lookAt turn_speed_deg_s must be within ["
+                        + (int) TURN_SPEED_MIN + ", " + (int) TURN_SPEED_MAX + "], got: " + s);
+            }
+            speed = s;
+        }
+        return new LookAtParams(x, y, z, speed);
     }
 
     // ------------------------------------------------------------------ rotation math
@@ -112,6 +142,60 @@ public final class LookContracts {
             f += 360.0;
         }
         return f;
+    }
+
+    // ------------------------------------------------------------------ smooth turn math (v1.2)
+
+    /** Convergence window (degrees) for a smooth turn: both axes within this -> snap exact. */
+    public static final double TURN_CONVERGENCE_DEG = 1.0;
+
+    /**
+     * Shortest SIGNED yaw difference from {@code from} to {@code to}, in
+     * [-180, 180) (the vanilla {@link #wrapDegrees} reduction: an exactly-180
+     * delta reports -180, i.e. turns left). Positive means increasing yaw.
+     * Pure, so the smoke test pins the wrap boundaries.
+     */
+    public static double yawDelta(double from, double to) {
+        double d = wrapDegrees(to - from);
+        return d;
+    }
+
+    /**
+     * One tick's step of a fixed-angular-speed approach: moves
+     * {@code current} toward the target by at most {@code maxStepDeg} along
+     * the SIGNED remaining difference {@code delta} (use {@link #yawDelta}
+     * for yaw so the approach always takes the short way round; plain
+     * {@code target - current} for pitch, which never wraps).
+     */
+    public static double approach(double current, double delta, double maxStepDeg) {
+        if (delta > maxStepDeg) {
+            return current + maxStepDeg;
+        }
+        if (delta < -maxStepDeg) {
+            return current - maxStepDeg;
+        }
+        return current + delta;
+    }
+
+    /**
+     * A smooth turn has converged when both axes sit within
+     * {@link #TURN_CONVERGENCE_DEG} of the target (yaw measured the short way
+     * round). The tick controller then snaps to the EXACT target rotation -
+     * "误差 &lt; 1° 收口精确落位".
+     */
+    public static boolean turnConverged(double yaw, double pitch, double targetYaw, double targetPitch) {
+        return Math.abs(yawDelta(yaw, targetYaw)) < TURN_CONVERGENCE_DEG
+                && Math.abs(pitch - targetPitch) < TURN_CONVERGENCE_DEG;
+    }
+
+    /**
+     * Worst-case wall-clock time one smooth turn may take (milliseconds) at
+     * {@code speedDegPerSec}: the longest possible shortest-path rotation is
+     * 180 deg yaw + 180 deg pitch = 360 deg, plus slack for one late frame.
+     * Callers use it as the latch timeout and the turn's self-expiry bound.
+     */
+    public static long maxTurnMs(double speedDegPerSec) {
+        return (long) Math.ceil(360.0 / speedDegPerSec * 1000.0) + 1500;
     }
 
     // ------------------------------------------------------------------ results
@@ -158,6 +242,23 @@ public final class LookContracts {
         result.addProperty("yaw", yaw);
         result.addProperty("pitch", pitch);
         result.addProperty("distance", distance);
+        return result;
+    }
+
+    /**
+     * {@code lookAt} result in SMOOTH mode (v1.2 {@code turn_speed_deg_s}):
+     * the instant-mode fields plus {@code converged} (did the view reach the
+     * target, false when superseded by a newer look or expired) and
+     * {@code elapsed_ms} (turn duration; 50 ms tick granularity).
+     * {@code yaw}/{@code pitch} are the rotation AT COMPLETION (the exact
+     * target on convergence, wherever the view ended on supersession).
+     */
+    public static JsonObject lookAtSmoothResult(double x, double y, double z,
+                                                double yaw, double pitch, double distance,
+                                                boolean converged, long elapsedMs) {
+        JsonObject result = lookAtResult(x, y, z, yaw, pitch, distance);
+        result.addProperty("converged", converged);
+        result.addProperty("elapsed_ms", elapsedMs);
         return result;
     }
 
