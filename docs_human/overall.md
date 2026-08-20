@@ -1,12 +1,12 @@
 ﻿# Sirius 全局技术文档（overall）
 
 > 写给第一次接触本项目的**人**：从一段话看懂全貌，往下逐层加深，直到贴着源码的细节设计。
-> 所有代码片段逐字摘自仓库真实文件并标注 `文件:行号`（截至 2026-08-18，M0+M1 完成态）。
+> 所有代码片段逐字摘自仓库真实文件并标注 `文件:行号`（截至 2026-08-20，M3.5 完成态；§4.1-4.7 代码摘录时点较早，行号以标注为准）。
 > agent 侧的权威规格在 [`docs_agent/`](../docs_agent/)（本文是它的可读重述，冲突时以权威为准）；设计愿景（纯思路）见同目录 [sirius-design.md](./sirius-design.md)。
 
 ## 0. 一段话
 
-Sirius 是一个 Minecraft AI 陪玩项目：让 AI 拥有**一个真正的 Minecraft 客户端**当身体（不是协议模拟器，也不是服务端假人），后端 Python 大脑通过 WebSocket 指挥这具身体——看它看的画面、（M2 已实现）替它动鼠标键盘。目标是"陪你进任何服务器玩的 AI 队友"：它看得到你的皮肤和 mod boss 的特效，对服务器来说就是个普通玩家。大脑侧是分层架构（大模型规划器 + 小模型执行器 + 无 LLM 反射层），记忆/技能/人格系统让它越玩越熟练、越处越懂你。
+Sirius 是一个 Minecraft AI 陪玩项目：让 AI 拥有**一个真正的 Minecraft 客户端**当身体（不是协议模拟器，也不是服务端假人），后端 Python 大脑通过 WebSocket 指挥这具身体——看它看的画面、替它动鼠标键盘（M2 起），再到"走到/挖掉/收集 N 个"一次调用自动完成的任务级原语（M3.5 起，运动控制从 VLM 下沉确定性代码）。目标是"陪你进任何服务器玩的 AI 队友"：它看得到你的皮肤和 mod boss 的特效，对服务器来说就是个普通玩家。大脑侧是分层架构（大模型规划器 + 小模型执行器 + 无 LLM 反射层），记忆/技能/人格系统让它越玩越熟练、越处越懂你。
 
 ## 1. 全景图
 
@@ -22,7 +22,7 @@ Sirius 是一个 Minecraft AI 陪玩项目：让 AI 拥有**一个真正的 Mine
 └─────────────────────────┘         └──────────────────────────────────┘
 ```
 
-两侧唯一的耦合点是**协议**（v1.0，M0 冻结）：MCP 语义的请求-响应 + 事件推送，外加任务帧（结构吸收自 N.E.K.O，非兼容承诺）。大脑对 mock 假身体开发全部逻辑（M0-M3），M3 换真身体零改动——"大脑不绑死身体"已实战验证（同一 BridgeClient 连 mock 与真 Mod）。
+两侧唯一的耦合点是**协议**（M0 冻结 v1.0，M3.5 演进至 v1.2，始终向后兼容）：MCP 语义的请求-响应 + 事件推送，外加任务帧（结构吸收自 N.E.K.O，非兼容承诺）。大脑对 mock 假身体开发全部逻辑（M0-M3），M3 换真身体零改动——"大脑不绑死身体"已实战验证（同一 BridgeClient 连 mock 与真 Mod）。
 
 ## 2. 三条调用栈旅程
 
@@ -39,7 +39,7 @@ BridgeClient.call("getStats")
   → client.py 按 id 配对，await 的 call() 返回 result                    client.py:267
 ```
 
-连接建立的前置：首帧必须是 `hello`（token 握手，BridgeServer.java:228），之后通常先 `capabilities/list` 协商能力（12 项，协议版本 1.0）。
+连接建立的前置：首帧必须是 `hello`（token 握手，BridgeServer.java:228），之后通常先 `capabilities/list` 协商能力（M3.5 后 13 项含 dig，协议版本 1.2）。
 
 ### 2.2 一次任务帧的旅程（fire-and-forget）
 
@@ -72,10 +72,11 @@ Mod 侧事件源（着火/聊天/GUI 变化…）
 | 包 | 干什么 |
 |---|---|
 | `sirius_brain/protocol/` | 协议权威：pydantic 帧模型（frames/tools/tasks/enums）+ schema 导出 CLI |
-| `sirius_brain/mock/` | 假身体：剧本驱动的 WS 服务 + JSONL 帧回放（大脑 M0-M3 的开发靶） |
+| `sirius_brain/mock/` | 假身体：剧本驱动的 WS 服务 + JSONL 帧回放 + FakeWorldBridge 可变世界（M3.5，假 Baritone/可挖方块/掉落物吸附——原语全链路离线可测） |
 | `sirius_brain/bridge/` | BridgeClient：连接真/mock 身体的统一入口（重连监督/RPC 配对/事件分发） |
-| `schema/` | 冻结产物：27 个自包含 JSON Schema（Java 侧消费，构建期单向同步进 jar） |
-| `tests/` | 6 个测试文件，真实 WebSocket 回环（不 mock websockets 库本身） |
+| `sirius_brain/agent/` | M3 大脑循环（loop/tools/vlm/config）+ M3.5 任务级原语（primitives.py：walkTo/digBlock/collectBlock/pickup） |
+| `schema/` | 冻结产物：28 个自包含 JSON Schema（Java 侧消费，构建期单向同步进 jar） |
+| `tests/` | 真实 WebSocket 回环（不 mock websockets 库本身），M3.5 后 302 项 |
 
 ### sirius-bridge（Java/NeoForge，眼与手）
 
@@ -95,7 +96,9 @@ Mod 侧事件源（着火/聊天/GUI 变化…）
 | `InputGuard.java` | 输入总闸：开关/令牌桶/权限四级（M2-D） |
 | `EventPusher.java` + `EventsContracts.java` | M2-B 事件推送：单一事件入口 + 截图流（节流/预算/环形缓冲） |
 | `GuiTools.java` + `GuiContracts.java` | M2-C getGuiState：widget 树 + 容器格子角色分类 |
-| `LookTools.java` + `LookContracts` + `PermissionContracts` | M2-D 视角控制（vanilla lookAt 原式）+ 权限判定 |
+| `LookTools.java` + `LookContracts` + `PermissionContracts` | M2-D 视角控制（vanilla lookAt 原式）+ 权限判定；M3.5 加 turn_speed_deg_s 平滑转头 |
+| `TurnController.java` | M3.5 tick 驱动平滑转头状态机（固定角速度两轴推进、新 turn 替换旧） |
+| `DigTools.java` + `DigContracts.java` | M3.5 dig 智能挖掘原语：纯状态机监视器（Contracts）+ 动作层按住壳（Tools，焦点免疫） |
 | `Json.java` | 帧构造 + JSON-RPC 风格错误码 |
 
 ## 4. 细节设计（思路 + 真实代码）
@@ -350,7 +353,7 @@ task_id 不参与匹配，回帧一律原样带回——和真 Mod 同一条铁�
             ...
 ```
 
-**M3（会师）**：大脑最简版（单模型：结构化感知+按需截图→VLM→工具）驱动真身体（NEKO 兼容层已取消，2026-08-19 裁决）。之后 M4-M9：反射/寻路 → 分层大脑 → 记忆 → 知识库 → 技能沉淀 → 陪伴感。完整路线图见 `docs_agent/sirius-technical.md` §10。
+**M3（会师）**：大脑最简版（单模型：结构化感知+按需截图→VLM→工具）驱动真身体（NEKO 兼容层已取消，2026-08-19 裁决）。之后 M3.5 智能优化（已完成，见 §4.10）→ M4-M9：反射 → 分层大脑 → 记忆 → 知识库 → 技能沉淀 → 陪伴感。完整路线图见 `docs_agent/sirius-technical.md` §10。
 
 ## 4.9 M3 的会师：最小整机大脑活了（2026-08-19）
 
@@ -385,29 +388,139 @@ VLM（qwen3.7-plus）决策 → tool_calls
 3. **哑管道原则正确**——Java 侧只管上报数据和执行注入，所有智能在 Python 大脑，两轨解耦干净，运行流畅
 4. **急停/自回显/预算保护**都按设计生效——bot 不会无限烧 token、不会把自己的话当指令、玩家说"停下"就停
 
-**还做不到什么**（诚实清单）：
+**还做不到什么**（诚实清单，M3 时点）：
 
 - 复杂任务（找树+砍+收集）单次跑不完——token 预算 200k 太紧，反复截图累积太快
 - bot 找特定方块（如 spruce_log）很吃力——world.query 返回 512 个方块就截断，VLM 只能靠截图绕路
 - bot 还不会"挖方块"——input.click 左键长按挖方块的组合动作，VLM 还没学会
 - 长距离移动会撞墙掉坑——没有寻路（M4 的工作）
-- 这些问题都有明确的后续方案（见下方"下一步"）
+- 这些问题都有明确的后续方案（见下方"下一步"）——其中前三条 + 寻路，M3.5 一次解决了（见 §4.10）
+
+## 4.10 M3.5 的智能优化：把小脑还给代码（2026-08-20）
+
+M3 的"不智能"根因是**动作粒度太低**：VLM 被迫当小脑，每按一次 W、每转一次视角都是一次完整的模型调用。参考项目（Numen / Mindcraft）的共同答案是"LLM 只做意图层决策，执行下沉确定性代码"。M3.5 把这个论点落进了代码，并在真机上闭环验证。
+
+**为什么下沉（同任务前后对比）**：
+
+| | M3-C（2026-08-19） | M3.5 T5b（2026-08-20） |
+|---|---|---|
+| 任务 | 搜集云杉木 5 根 | 砍橡木（同意图复测） |
+| VLM 调用 | 22 步 | **4 步** |
+| 用量 | 212k tokens，预算耗尽中止 | **16k tokens**，8.0s 完成 |
+| 差别 | VLM 逐步键控（query→lookAt→input.key W→验位→…） | `collectBlock("#minecraft:logs", 3)` 一次调用，内部找/走/挖/捡全自动 |
+
+**交付了什么（三层）**：
+
+1. **brain 任务级原语**（`sirius-brain/sirius_brain/agent/primitives.py`）：`walk_to`（Baritone #goto 封装 + 15s 看门狗 + 界面屏障 + 协作取消≤1s）、`dig_block`（bridge dig 优先、旧 jar 自动回退）、`collect_block`（"找最近→走位→挖→拾取"循环；pickup 参数可关）+ `pickup()`（暂未暴露给 VLM）。工具描述本身就是契约——模型读描述就知道"该用哪个、失败怎么办"：
+
+```python
+# sirius-brain/sirius_brain/agent/tools.py:87-91
+PRIMITIVE_TOOL_HINTS: dict[str, str] = {
+    WALK_TO_TOOL:
+        "走到目标坐标 (x,z)（y 可选）。受理即执行：自动寻路并阻塞行走到位后才返回，"
+        "不需要你操心路径与按键细节，更不要用 input.key 一步步走。成功返回最终坐标；"
+        "失败时读返回文本里的建议行动照做；行走超时时同参数重发即可续走剩余路程",
+```
+
+2. **bridge 智能原语**：`dig`（动作层监视按住，见下）、`lookAt` 的 `turn_speed_deg_s`（固定角速度平滑转头，"转头像自然转头"）、`world.query` 的 `filter`（registry id / `#tag`，命中按距离最近优先返回 32 条）、`input.click` 的 `hold_ms`（长按）、entities 载荷带掉落物注册名。协议 1.0→1.1→1.2，缺省参数行为与 v1.0 字节级兼容。
+
+3. **提示契约层**：系统提示重写（原语优先/键鼠兜底的分层引导 + 工具边界契约）、预算 200k→500k、错误码→建议动作映射；另支持本地 LM Studio 模型作 VLM（`reasoning_effort:"none"` 是本地关思考唯一有效开关；部署细节见各机 local.md）。
+
+**Bridge 边界从两层升三层（本轮架构修订）**。原分工"输入标准化、感知原语化——Mod 是哑管道"在 M3.5 被一个真机发现修订：事件层（input.click 式注入）的"按住"在 vanilla 里被**操作系统焦点双门控**——聊天框开/关一次（walkTo 的必经路径！）就会永久丢失鼠标抓取，之后注入的按键状态在、却零挖掘零报错。Mod 因此新增第三层"动作层操作原语"（dig 直接调 vanilla 持键路径自己调用的方法，焦点完全免疫），这是 M2-D look 先例的正式确立：
+
+```java
+// sirius-bridge/src/main/java/io/sirius/bridge/DigTools.java:52-65
+ * <p><b>Why the ACTION layer for the hold (not input.click's event layer):</b>
+ * vanilla's continuous destroy is double-gated on OS focus:
+ * {@code Minecraft.handleKeybinds} only continues mining while
+ * {@code mouseHandler.isMouseGrabbed()}, and {@code MouseHandler.grabMouse()}
+ * REFUSES the (re)grab whenever the window is not active - so after any
+ * chat-screen open/close while unfocused (exactly the AI-plays-human-watches
+ * workflow), an injected PRESS sets the key state but nothing mines
+ * (real-machine-verified, M3.5 T6). The dig tool instead calls the exact
+ * gameMode methods vanilla's held-button path itself runs -
+ * {@code startDestroyBlock} / {@code continueDestroyBlock} /
+ * {@code stopDestroyBlock} (+ hand swing) - the M2-D "look" precedent: an
+ * action-layer primitive where no reliably-injectable event path exists.
+ * This keeps working while the human alt-tabs (with
+ * {@code keep_running_unfocused}, ticks continue).
+```
+
+三层新边界：**感知原语化**（Mod 上报未加工数据）→ **输入标准化**（注入走可校验的 input.*）→ **动作层操作原语**（无可靠事件路径的连续操作允许 Mod 提供意图级工具，如"挖这个方块"）；**任务级语义组合仍在 brain**（walkTo/collectBlock 是 brain 原语，Mod 无任务概念）。
+
+**智能挖掘机制（一图流）**——`collectBlock(["#minecraft:logs"], 3)` 一次调用内部发生的事：
+
+```
+VLM 调 collectBlock(["#minecraft:logs"], 3)          ← 唯一一次 VLM 决策
+  ├─ world.query(type=blocks, filter=["#minecraft:logs"])   → 候选按距离升序（最近优先 32）
+  ├─ 取最近的树干坐标，走位到它旁边 ±1.5 格
+  │     └─ walk_to → Baritone #goto（"#" 前缀客户端拦截，不达服务器）+ 轮询到位
+  ├─ dig_block(x,y,z)
+  │     ├─ 复核存在 + 触及 ≤4.5 格检查（太远不盲挖，教学"先 walkTo"）
+  │     ├─ bridge dig 原语：300°/s 平滑转头瞄准 → 动作层按住监视 → 遮挡穿透
+  │     │   （视线先穿树叶再达树干也挖得开，结果带 broken_via_occluder 标记）
+  │     └─ 挖掉后顺路捡掉落：只捡挖点 4 格内、注册名精确匹配的（别人的不碰），
+  │         走过去让 vanilla 吸附，实体消失=已拾取
+  └─ 循环到 3/3 或 64 格内清空 → 收尾话术（有收获=成功；一个没有=失败+建议）
+```
+
+挖掘时长不是拍脑袋——常量注释就是取值依据（徒手 oak_log 需连续按住 3.0s，600ms 短按八段全空是真机踩过的坑）：
+
+```python
+# sirius-brain/sirius_brain/agent/primitives.py:58-66
+#: 单段挖掘的按住时长（毫秒）。**必须 ≥ 目标徒手破坏时间**——vanilla 机制松键后
+#: 挖掘进度清零，跨段不累积，段太短永远破不了。徒手 oak_log hardness 2.0 → 2.0×1.5=3.0s
+#: （有斧时才是 0.3-0.6s），基准段 3500ms 覆盖无遮挡徒手木类（M3.5 T5a 真机教训：
+#: 600ms 八段全空，见 docs_agent/reports/M3.5-T5a.md）。**遮挡场景按段递增**：
+#: 视线先穿 k 格树叶（0.35s/格）再达树干，需 hold ≥ 0.35k+3.0s——段 n 的 hold
+#: = min(DIG_CLICK_HOLD_MS×n, DIG_CLICK_HOLD_MAX_MS)，第 3 段起 8s（真机实证
+#: 8s 可穿透 2 格树叶 + 树干）。协议上限 10000。石头徒手 7.5s 仍超段长——那是
+#: "给工具再挖"的预期教学失败，不是本层要解决的
+DIG_CLICK_HOLD_MS = 3500
+```
+
+另一个小而重要的设计是**滚动状态免费搭车**（Numen 做法）：每步 VLM 调用前自动注入一条最新的自身状态摘要（替换式，不累积），模型不必为"我在哪/血量如何"专门花一次工具调用：
+
+```python
+# sirius-brain/sirius_brain/agent/loop.py:613-618
+    async def _inject_rolling_status(self, messages: list[dict[str, Any]]) -> None:
+        """每步 VLM 调用前注入一条〔当前状态〕user 消息（M3.5，替换式不累积）。
+
+        Numen runtime_state 的"免费搭车"做法（EntityAgentLoop）：模型每步白拿一份
+        最新自身状态，不必为"我在哪/血量如何"专门花一次 getStats 工具调用。
+        getStats 失败则跳过该步注入（上一条旧状态留在原地，不阻塞主循环）。
+        """
+```
+
+**真机验证数字**：Baritone 冒烟（#goto 3s 收敛 2.0 格）；原语层 6/6（急停 1.49s）；T6 五项 5/5（collect 提速 4.9 倍至 16.8s/3 根；遮挡穿透 3.9s；平滑转头收口与瞬间转 0.000° 一致）；T7 拾取 4/4；pytest 263→302、Java 冒烟 241→345。
+
+**还做不到什么**（M3.5 诚实清单）：
+
+- 本地 VLM 遇观察类问题偶尔不调工具直接幻觉作答——需系统提示硬约束（M4）
+- 掉落物匹配是精确 id：挖石头掉的圆石（stone→cobblestone）不会被捡——需要掉落表知识（M4 再议；当前保守不捡恰好符合多人服"不碰别人掉落"的礼仪）
+- `pickup()` 原语已实现未暴露给 VLM（M4 注册表层再议）
+- 无 filter 的 world.query 仍是"先截断后排序"旧语义（brain 侧已防御；根治属协议变更）
+- input.click 事件层长按、input.mouseMove 转头仍需窗口焦点（vanilla 门控无开关；"AI 播放"场景的标准部署 = 游戏窗口保持前台）
+- 多人服在线复验待用户开服（本轮服务器主机离线，单机验证 4/4）；完整聊天循环验收待用户进世界（直驱已过）
+- collect 16.8s/3 根的下一步提速在换斧/执行器层（M5），不在本层
 
 ## 5. 已知边界与下一步
 
-**当前边界（M3 完成态）**：M0-M3 全部完成。最小整机大脑在真服务器上闭环验证通过——bot 能听、能看、能想、能动、能回话。263 项 pytest + 242 项 Java smoke 全绿。
+**当前边界（M3.5 完成态）**：M0-M3.5 全部完成。bot 能听、能看、能想、能动、能回话，复杂任务（找树+砍+收集+拾取）能在预算内一次跑完（4 步 16k tokens）。302 项 pytest + 345 项 Java smoke 全绿。
 
-**M3 暴露的问题**（详见 `docs_agent/reports/M3-C.md`）：
+**M3 暴露的问题 → M3.5 处置**（对照 §4.9 诚实清单）：
 
-| 优先级 | 问题 | 后续方案 |
+| 优先级 | 问题（M3 时点） | M3.5 处置 |
 |---|---|---|
-| P0 | token 预算 200k 太紧，复杂任务跑不完 | 提至 500k；或步数预算为主、token 仅作硬上限 |
-| P0 | world.query 512 截断，VLM 找不到特定方块 | 增加按类型过滤查询（`filter="spruce_log"`） |
-| P0 | VLM 不会组合"挖方块"动作 | M5 分层大脑（规划器分解+执行器熟练） |
-| P1 | hello_ack 帧未在协议建模 | 清理项（功能不影响） |
-| P1 | command() 长消息可能丢字 | 真机长文本测试+调时序常量 |
-| P1 | 22 步 history 未压缩，prompt 膨胀 | M5 history 摘要机制 |
-| P2 | 视角转动需窗口前台 | M4 评估动作层 player.turn() |
-| P2 | 无寻路，长距离会撞墙 | M4 brain 侧 A* |
+| P0 | token 预算 200k 太紧，复杂任务跑不完 | **已解决**：预算提至 500k + 原语下沉后同任务用量 212k→16k |
+| P0 | world.query 512 截断，找不到特定方块 | **已解决**：filter 参数（registry id/#tag、最近优先 32）；无 filter 路径保留旧语义（brain 已防御） |
+| P0 | VLM 不会组合"挖方块" | **已解决**：digBlock/collectBlock 原语 + bridge dig 智能挖掘 |
+| P1 | hello_ack 帧未在协议建模 | 未动（功能不影响，清理项） |
+| P1 | command() 长消息可能丢字 | 未动（真机长文本测试+调时序常量） |
+| P1 | 22 步 history 未压缩 | 原语下沉后步数骤降，压力缓解；摘要机制留 M5 |
+| P2 | 视角转动需窗口前台 | **部分解决**：lookAt/look/dig 走动作层焦点免疫；input.mouseMove 仍需焦点 |
+| P2 | 无寻路，长距离撞墙 | **已解决**：Baritone 集成（#goto/#stop 聊天命令驱动，真机冒烟通过） |
 
-**下一步：M4（反射+寻路）**——brain 侧本能链（序数分层，消费 CRITICAL 危险事件：溺水/着火/低血/死亡）+ 寻路（A*，消费 world.query 数据，经 input.key 驱动移动）。目标是"被围攻能脱战、跟我来能穿越 200 格"。
+**M3.5 新暴露的问题**：见 §4.10 诚实清单（本地 VLM 幻觉作答、掉落表知识、pickup 暴露、焦点门控残余、多人服复验）。
+
+**下一步：M4（反射层为主）**——brain 侧本能链（序数分层，消费 M2-B 的 CRITICAL 危险事件：溺水/着火/低血/死亡）是主体；寻路原 M4 内容已由 Baritone 集成解决（M3.5），收窄为次项：Baritone 注入路径优化（#goto 每次聊天往返 ~1.3s）与系统提示硬约束。验收目标不变："被围攻能脱战、跟我来能穿越 200 格"。
