@@ -11,19 +11,27 @@ import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.food.FoodData;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -206,17 +214,19 @@ final class PerceptionTools {
                 return null; // not in a world -> graceful {"in_game": false}
             }
             if ("blocks".equals(p.type())) {
-                BlockPos center = player.blockPosition();
                 BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos(); // reused, no per-block garbage
+                if (p.filter() != null) {
+                    // v1.1 filtered path: nearest-first via ToolContracts' bounded
+                    // heap; tag membership resolved here because TagKey is a
+                    // Minecraft type (Contracts stays pure for the smoke test).
+                    ToolContracts.BlockFilter filter = ToolContracts.BlockFilter.parse(p.filter());
+                    return ToolContracts.scanBlocks(player.getX(), player.getY(), player.getZ(), p.range(),
+                            nameProbe(level, cursor), filter, tagProbe(filter));
+                }
+                // v1.0 unfiltered path - unchanged.
+                BlockPos center = player.blockPosition();
                 return ToolContracts.scanBlocks(center.getX(), center.getY(), center.getZ(), p.range(),
-                        (x, y, z) -> {
-                            BlockState state = level.getBlockState(cursor.set(x, y, z));
-                            if (state.isAir()) {
-                                return null; // unloaded chunks also surface as air
-                            }
-                            var id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
-                            return id != null ? id.toString() : "unknown";
-                        });
+                        nameProbe(level, cursor));
             }
             List<ToolContracts.EntityFact> facts = new ArrayList<>();
             for (Entity entity : level.entitiesForRendering()) {
@@ -234,9 +244,59 @@ final class PerceptionTools {
                         entity.getX(), entity.getY(), entity.getZ(),
                         health));
             }
-            return ToolContracts.filterEntities(facts, player.getX(), player.getY(), player.getZ(), p.range());
+            return ToolContracts.filterEntities(facts, player.getX(), player.getY(), player.getZ(),
+                    p.range(), p.filter());
         });
         return Json.okResponse(ctx.id(), result != null ? result : ToolContracts.notInGame());
+    }
+
+    // ------------------------------------------------------------------ world.query block access
+
+    /** Registry name of the block at (x,y,z), or null for air / unloaded chunk. */
+    private static ToolContracts.BlockProbe nameProbe(ClientLevel level, BlockPos.MutableBlockPos cursor) {
+        return (x, y, z) -> {
+            BlockState state = level.getBlockState(cursor.set(x, y, z));
+            if (state.isAir()) {
+                return null; // unloaded chunks also surface as air
+            }
+            var id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
+            return id != null ? id.toString() : "unknown";
+        };
+    }
+
+    /**
+     * Tag membership for the filtered scan, over the real holder tags
+     * ({@code BlockState.is(TagKey)} semantics - tags live on the registry
+     * holder, so the block's default state answers for every state of that
+     * type). TagKeys are resolved once per query; the name -> matching-tag-set
+     * memo costs one registry lookup per DISTINCT block name in range (a
+     * handful even in dense forests) instead of per position.
+     */
+    private static ToolContracts.TagProbe tagProbe(ToolContracts.BlockFilter filter) {
+        if (filter.tagIds().isEmpty()) {
+            return null; // ids-only filter - the scan never consults the probe
+        }
+        List<TagKey<Block>> tagKeys = new ArrayList<>(filter.tagIds().size());
+        for (String tagId : filter.tagIds()) {
+            // BlockTags.create == TagKey.create(Registries.BLOCK, id); unknown
+            // tags simply match nothing (holder.is checks set membership).
+            tagKeys.add(BlockTags.create(ResourceLocation.parse(tagId)));
+        }
+        Map<String, Set<String>> memo = new HashMap<>();
+        return (blockName, tagId) -> memo
+                .computeIfAbsent(blockName, name -> {
+                    Block block = BuiltInRegistries.BLOCK.get(ResourceLocation.parse(name));
+                    Set<String> hits = new HashSet<>();
+                    if (block != null) { // names come from the registry itself; null only for exotic failures
+                        for (int i = 0; i < tagKeys.size(); i++) {
+                            if (block.defaultBlockState().is(tagKeys.get(i))) {
+                                hits.add(filter.tagIds().get(i));
+                            }
+                        }
+                    }
+                    return hits;
+                })
+                .contains(tagId);
     }
 
     // ------------------------------------------------------------------ helpers

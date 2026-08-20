@@ -30,8 +30,13 @@ import java.util.List;
  */
 public final class Capabilities {
 
-    /** Protocol version negotiated via hello/hello_ack and capabilities/list. */
-    public static final String PROTOCOL_VERSION = "1.0";
+    /**
+     * Protocol version negotiated via hello/hello_ack and capabilities/list.
+     * Bumped 1.0 -> 1.1 in M3.5 (world.query filter + input.click hold_ms),
+     * staying in lockstep with {@code protocol_version} in the frozen
+     * ../sirius-brain/schema/index.json this class serves.
+     */
+    public static final String PROTOCOL_VERSION = "1.1";
 
     /** Per-capability version (the Python mock advertises "1.0" for every tool). */
     public static final String TOOL_VERSION = "1.0";

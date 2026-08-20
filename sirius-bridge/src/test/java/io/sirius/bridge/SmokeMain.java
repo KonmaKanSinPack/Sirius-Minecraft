@@ -1,5 +1,6 @@
 package io.sirius.bridge;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -214,9 +215,10 @@ public final class SmokeMain {
 
         // --- input.click
         InputContracts.ClickParams c = validParams(() -> InputContracts.clickParams(json("{\"button\":0}")));
-        check(c.button() == 0 && c.count() == 1, "input.click: defaults (count 1)");
+        check(c.button() == 0 && c.count() == 1 && c.holdMs() == null,
+                "input.click: defaults (count 1, no hold - v1.0 behaviour)");
         c = validParams(() -> InputContracts.clickParams(json("{\"button\":2,\"count\":3}")));
-        check(c.button() == 2 && c.count() == 3, "input.click: button/count parsed");
+        check(c.button() == 2 && c.count() == 3 && c.holdMs() == null, "input.click: button/count parsed");
         expectInvalid(() -> InputContracts.clickParams(json("{}")), "input.click: missing button rejected");
         expectInvalid(() -> InputContracts.clickParams(json("{\"button\":3}")),
                 "input.click: button 3 rejected");
@@ -229,6 +231,56 @@ public final class SmokeMain {
                 "input.click: count over cap rejected");
         expectInvalid(() -> InputContracts.clickParams(json("{\"button\":0.5}")),
                 "input.click: fractional button rejected");
+
+        // --- input.click hold_ms (M3.5 v1.1)
+        c = validParams(() -> InputContracts.clickParams(json("{\"button\":0,\"hold_ms\":600}")));
+        check(c.button() == 0 && c.holdMs() == 600 && c.count() == 1,
+                "input.click: hold_ms parsed (count defaults 1)");
+        c = validParams(() -> InputContracts.clickParams(json("{\"button\":1,\"hold_ms\":0}")));
+        check(c.holdMs() == 0, "input.click: hold_ms 0 accepted (immediate release)");
+        c = validParams(() -> InputContracts.clickParams(json("{\"button\":1,\"hold_ms\":10000}")));
+        check(c.holdMs() == 10000, "input.click: hold_ms boundary 10000 accepted");
+        c = validParams(() -> InputContracts.clickParams(json("{\"button\":1,\"hold_ms\":null}")));
+        check(c.holdMs() == null, "input.click: explicit null hold_ms -> v1.0 tap");
+        expectInvalid(() -> InputContracts.clickParams(json("{\"button\":0,\"hold_ms\":10001}")),
+                "input.click: hold_ms over cap rejected");
+        expectInvalid(() -> InputContracts.clickParams(json("{\"button\":0,\"hold_ms\":-1}")),
+                "input.click: negative hold_ms rejected");
+        expectInvalid(() -> InputContracts.clickParams(json("{\"button\":0,\"hold_ms\":0.5}")),
+                "input.click: fractional hold_ms rejected");
+        expectInvalid(() -> InputContracts.clickParams(json("{\"button\":0,\"hold_ms\":\"600\"}")),
+                "input.click: string hold_ms rejected");
+        expectInvalid(() -> InputContracts.clickParams(json("{\"button\":0,\"hold_ms\":[600]}")),
+                "input.click: array hold_ms rejected");
+        expectInvalid(() -> InputContracts.clickParams(json("{\"button\":0,\"count\":2,\"hold_ms\":100}")),
+                "input.click: count + hold_ms rejected (mutually exclusive)");
+        expectInvalid(() -> InputContracts.clickParams(json("{\"button\":0,\"count\":1,\"hold_ms\":100}")),
+                "input.click: explicit count 1 + hold_ms still rejected");
+
+        // --- input.click schedule: the timed PRESS/RELEASE plan (pure, so the
+        // hold timing is verifiable without a client)
+        List<InputContracts.ScheduledClick> tap = InputContracts.clickSchedule(
+                new InputContracts.ClickParams(0, 1, null));
+        check(tap.size() == 1 && !tap.get(0).press() && tap.get(0).delayMs() == InputContracts.CLICK_HOLD_MS,
+                "input.click: default schedule = single RELEASE at +25ms (v1.0 unchanged)");
+        List<InputContracts.ScheduledClick> burst = InputContracts.clickSchedule(
+                new InputContracts.ClickParams(0, 3, null));
+        boolean burstOrder = burst.size() == 5;
+        boolean[] burstPresses = {false, true, false, true, false};
+        long[] burstDelays = {25, 50, 75, 100, 125};
+        for (int i = 0; burstOrder && i < burst.size(); i++) {
+            burstOrder &= burst.get(i).press() == burstPresses[i] && burst.get(i).delayMs() == burstDelays[i];
+        }
+        check(burstOrder, "input.click: count 3 schedule = R@25 P@50 R@75 P@100 R@125 (v1.0 unchanged)");
+        List<InputContracts.ScheduledClick> hold = InputContracts.clickSchedule(
+                new InputContracts.ClickParams(0, 1, 600));
+        check(hold.size() == 1 && !hold.get(0).press() && hold.get(0).delayMs() == 600
+                        && hold.get(0).delayMs() > InputContracts.CLICK_HOLD_MS,
+                "input.click: hold_ms schedule = single RELEASE delayed to +600ms");
+        List<InputContracts.ScheduledClick> zeroHold = InputContracts.clickSchedule(
+                new InputContracts.ClickParams(2, 1, 0));
+        check(zeroHold.size() == 1 && zeroHold.get(0).delayMs() == 0,
+                "input.click: hold_ms 0 schedules the RELEASE immediately");
 
         // --- result shapes
         JsonObject keyResult = InputContracts.keyResult("E", 69, 50, 1, true);
@@ -246,15 +298,22 @@ public final class SmokeMain {
                 "input results: mouseMoveResult shape");
 
         JsonObject clickResult = InputContracts.clickResult(0, 2, true, "InventoryScreen",
-                "evidence_click_20260818_120000000.jpg", 12345);
+                "evidence_click_20260818_120000000.jpg", 12345, null);
         check(clickResult.get("clicked").getAsBoolean()
-                && "InventoryScreen".equals(clickResult.get("screen").getAsString())
-                && clickResult.get("evidence").getAsJsonObject().get("bytes").getAsLong() == 12345,
-                "input results: clickResult shape with evidence");
+                        && "InventoryScreen".equals(clickResult.get("screen").getAsString())
+                        && clickResult.get("evidence").getAsJsonObject().get("bytes").getAsLong() == 12345
+                        && !clickResult.has("hold_ms"),
+                "input results: clickResult shape");
 
-        JsonObject clickNoEvidence = InputContracts.clickResult(1, 1, false, null, null, 0);
-        check(!clickNoEvidence.has("screen") && !clickNoEvidence.has("evidence"),
+        JsonObject clickNoEvidence = InputContracts.clickResult(1, 1, false, null, null, 0, null);
+        check(!clickNoEvidence.has("screen") && !clickNoEvidence.has("evidence")
+                        && !clickNoEvidence.has("hold_ms") && !clickNoEvidence.has("release_scheduled"),
                 "input results: clickResult omits null fields");
+
+        JsonObject clickHold = InputContracts.clickResult(0, 1, false, null, null, 0, 600);
+        check(clickHold.get("hold_ms").getAsInt() == 600
+                        && clickHold.get("release_scheduled").getAsBoolean(),
+                "input results: clickResult echoes hold_ms + release_scheduled (v1.1)");
 
         check(InputContracts.rateLimitedMessage(20).contains("20"),
                 "input results: rate-limited message mentions the limit");
@@ -411,6 +470,79 @@ public final class SmokeMain {
                 "world.query: range over cap rejected");
         expectInvalid(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"range\":\"16\"}")),
                 "world.query: string range rejected");
+
+        // --- filter (M3.5 v1.1): absent/null keeps the v1.0 behaviour
+        check(validParams(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"range\":16}")))
+                .filter() == null, "world.query: absent filter -> null (v1.0 default)");
+        check(validParams(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":null}")))
+                .filter() == null, "world.query: explicit null filter -> v1.0 default");
+
+        p = validParams(() -> ToolContracts.worldQueryParams(
+                json("{\"type\":\"blocks\",\"filter\":[\"spruce_log\"]}")));
+        check(p.filter().equals(List.of("minecraft:spruce_log")),
+                "world.query: bare id gains minecraft: prefix");
+
+        p = validParams(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":[\"#logs\"]}")));
+        check(p.filter().equals(List.of("#minecraft:logs")),
+                "world.query: bare #tag gains minecraft: prefix");
+
+        p = validParams(() -> ToolContracts.worldQueryParams(json(
+                "{\"type\":\"blocks\",\"filter\":[\"minecraft:oak_log\",\"#somemod:ores\",\"modid:block_2.x\"]}")));
+        check(p.filter().equals(List.of("minecraft:oak_log", "#somemod:ores", "modid:block_2.x")),
+                "world.query: namespaced ids/tags pass through unchanged");
+
+        p = validParams(() -> ToolContracts.worldQueryParams(json("{\"type\":\"entities\",\"filter\":[\"zombie\"]}")));
+        check(p.filter().equals(List.of("minecraft:zombie")),
+                "world.query: entities filter entries normalized too");
+
+        // boundary sizes: 16 entries / 128 chars are still valid
+        JsonObject maxEntries = new JsonObject();
+        maxEntries.addProperty("type", "blocks");
+        JsonArray sixteen = new JsonArray();
+        for (int i = 0; i < 16; i++) {
+            sixteen.add("minecraft:block_" + i);
+        }
+        maxEntries.add("filter", sixteen);
+        check(validParams(() -> ToolContracts.worldQueryParams(maxEntries)).filter().size() == 16,
+                "world.query: 16 filter entries accepted (boundary)");
+        p = validParams(() -> ToolContracts.worldQueryParams(
+                json("{\"type\":\"blocks\",\"filter\":[\"" + "a".repeat(128) + "\"]}")));
+        check(p.filter().get(0).equals("minecraft:" + "a".repeat(128)),
+                "world.query: 128-char filter entry accepted (boundary, post-normalization)");
+
+        JsonObject seventeen = new JsonObject();
+        seventeen.addProperty("type", "blocks");
+        JsonArray tooMany = new JsonArray();
+        for (int i = 0; i < 17; i++) {
+            tooMany.add("minecraft:block_" + i);
+        }
+        seventeen.add("filter", tooMany);
+        expectInvalid(() -> ToolContracts.worldQueryParams(seventeen),
+                "world.query: 17 filter entries rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":[]}")),
+                "world.query: empty filter array rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":[\"\"]}")),
+                "world.query: empty filter entry rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(
+                json("{\"type\":\"blocks\",\"filter\":[\"" + "a".repeat(129) + "\"]}")),
+                "world.query: 129-char filter entry rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":[\"Spruce_Log\"]}")),
+                "world.query: uppercase filter entry rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":[\"oak log\"]}")),
+                "world.query: filter entry with space rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":[\"a:b:c\"]}")),
+                "world.query: filter entry with two colons rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":[\":stone\"]}")),
+                "world.query: leading-colon filter entry rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":[\"#\"]}")),
+                "world.query: bare # tag marker rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":\"spruce_log\"}")),
+                "world.query: non-array filter rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(json("{\"type\":\"blocks\",\"filter\":[7]}")),
+                "world.query: numeric filter entry rejected");
+        expectInvalid(() -> ToolContracts.worldQueryParams(
+                json("{\"type\":\"entities\",\"filter\":[\"#minecraft:skeletons\"]}")),
+                "world.query: #tag filter on entities rejected");
     }
 
     private static void imageOps() throws Exception {
@@ -544,11 +676,12 @@ public final class SmokeMain {
                 new ToolContracts.EntityFact("u-self", "Steve", "minecraft:player", 0, 64, 0, 20f),
                 new ToolContracts.EntityFact("u-near", "Zombie", "minecraft:zombie", 5, 64, 0, 12f),
                 new ToolContracts.EntityFact("u-far", "Zombie", "minecraft:zombie", 10, 64, 0, 12f),
-                new ToolContracts.EntityFact("u-item", "Diamond", "minecraft:diamond", 2, 64, 0, Float.NaN));
-        JsonObject entities = ToolContracts.filterEntities(facts, 0, 64, 0, 8);
+                new ToolContracts.EntityFact("u-item", "Diamond", "minecraft:item", 2, 64, 0, Float.NaN));
+        JsonObject entities = ToolContracts.filterEntities(facts, 0, 64, 0, 8, null);
         check(entities.get("count").getAsInt() == 3
-                        && entities.get("entities").getAsJsonArray().size() == 3,
-                "contracts: entities filtered by range");
+                        && entities.get("entities").getAsJsonArray().size() == 3
+                        && !entities.get("truncated").getAsBoolean(),
+                "contracts: entities filtered by range (truncated false below cap)");
         JsonElement item = entities.get("entities").getAsJsonArray().get(2);
         check(!item.getAsJsonObject().has("health"),
                 "contracts: NaN health omitted from entity entry");
@@ -557,9 +690,121 @@ public final class SmokeMain {
         for (int i = 0; i < 200; i++) {
             crowd.add(new ToolContracts.EntityFact("u" + i, "E" + i, "minecraft:zombie", i % 4, 64, 0, 1f));
         }
-        check(ToolContracts.filterEntities(crowd, 0, 64, 0, 16).get("count").getAsInt()
+        check(ToolContracts.filterEntities(crowd, 0, 64, 0, 16, null).get("count").getAsInt()
                         == ToolContracts.ENTITIES_CAP,
                 "contracts: entities capped at " + ToolContracts.ENTITIES_CAP);
+        check(ToolContracts.filterEntities(crowd, 0, 64, 0, 16, null).get("truncated").getAsBoolean(),
+                "contracts: entity overflow flagged truncated (v1.1 fix)");
+
+        List<ToolContracts.EntityFact> exactly = new ArrayList<>();
+        for (int i = 0; i < ToolContracts.ENTITIES_CAP; i++) {
+            exactly.add(new ToolContracts.EntityFact("u" + i, "E" + i, "minecraft:zombie", 1, 64, 0, 1f));
+        }
+        JsonObject full = ToolContracts.filterEntities(exactly, 0, 64, 0, 16, null);
+        check(full.get("count").getAsInt() == ToolContracts.ENTITIES_CAP
+                        && !full.get("truncated").getAsBoolean(),
+                "contracts: exactly CAP entities -> truncated false");
+
+        // --- filterEntities: type filter (v1.1)
+        JsonObject zombies = ToolContracts.filterEntities(facts, 0, 64, 0, 16, List.of("minecraft:zombie"));
+        check(zombies.get("count").getAsInt() == 2
+                        && "minecraft:zombie".equals(zombies.get("entities").getAsJsonArray().get(0)
+                                .getAsJsonObject().get("type").getAsString()),
+                "contracts: entities type filter keeps only matching type");
+        check(ToolContracts.filterEntities(facts, 0, 64, 0, 16, List.of("minecraft:creeper"))
+                        .get("count").getAsInt() == 0,
+                "contracts: entities type filter with no matches -> empty");
+        check(ToolContracts.filterEntities(crowd, 0, 64, 0, 16, List.of("minecraft:zombie"))
+                        .get("truncated").getAsBoolean(),
+                "contracts: filtered entity overflow still flags truncated");
+
+        // --- scanBlocks filtered (v1.1): id match, nearest-first, tie-break,
+        // truncation, #tag and mixed filters. Player at (0.5, 64.5, 0.5) -
+        // block centers are (x+0.5, y+0.5, z+0.5), so distSq(x,y,z) is
+        // dx^2+dy^2+dz^2 against those offsets.
+        ToolContracts.BlockProbe woods = (x, y, z) -> {
+            if (x == 0 && y == 65 && z == 0) return "minecraft:oak_log";   // distSq 1
+            if (x == 2 && y == 64 && z == 0) return "minecraft:oak_log";   // distSq 4
+            if (x == -3 && y == 64 && z == 0) return "minecraft:oak_log";  // distSq 9 (tie, x breaks it)
+            if (x == 0 && y == 64 && z == 3) return "minecraft:oak_log";   // distSq 9 (tie)
+            if (x == 4 && y == 64 && z == 0) return "minecraft:stone";     // non-match
+            return null;
+        };
+        JsonObject filtered = ToolContracts.scanBlocks(0.5, 64.5, 0.5, 8, woods,
+                ToolContracts.BlockFilter.parse(List.of("minecraft:oak_log")), null);
+        JsonArray kept = filtered.get("blocks").getAsJsonArray();
+        check(filtered.get("count").getAsInt() == 4 && !filtered.get("truncated").getAsBoolean()
+                        && kept.size() == 4,
+                "contracts: filtered scan keeps only id matches");
+        boolean nearestOrder = true;
+        int[][] expected = {{0, 65, 0}, {2, 64, 0}, {-3, 64, 0}, {0, 64, 3}};
+        double lastDist = -1;
+        for (int i = 0; i < expected.length; i++) {
+            JsonObject block = kept.get(i).getAsJsonObject();
+            nearestOrder &= block.get("x").getAsInt() == expected[i][0]
+                    && block.get("y").getAsInt() == expected[i][1]
+                    && block.get("z").getAsInt() == expected[i][2]
+                    && "minecraft:oak_log".equals(block.get("block").getAsString());
+            double dx = block.get("x").getAsInt() + 0.5 - 0.5;
+            double dy = block.get("y").getAsInt() + 0.5 - 64.5;
+            double dz = block.get("z").getAsInt() + 0.5 - 0.5;
+            double distSq = dx * dx + dy * dy + dz * dz;
+            nearestOrder &= distSq >= lastDist;
+            lastDist = distSq;
+        }
+        check(nearestOrder, "contracts: filtered scan ordered nearest-first (ties by x,y,z)");
+
+        // 40 matches -> the 32 NEAREST survive, truncated true
+        ToolContracts.BlockProbe row = (x, y, z) ->
+                (y == 64 && z == 0 && x >= 1 && x <= 40) ? "minecraft:oak_log" : null;
+        JsonObject overflow = ToolContracts.scanBlocks(0.5, 64.5, 0.5, 64, row,
+                ToolContracts.BlockFilter.parse(List.of("minecraft:oak_log")), null);
+        JsonArray overflowBlocks = overflow.get("blocks").getAsJsonArray();
+        check(overflow.get("count").getAsInt() == ToolContracts.FILTERED_BLOCKS_CAP
+                        && overflow.get("truncated").getAsBoolean(),
+                "contracts: filtered scan caps at " + ToolContracts.FILTERED_BLOCKS_CAP + " with truncated");
+        check(overflowBlocks.get(0).getAsJsonObject().get("x").getAsInt() == 1
+                        && overflowBlocks.get(overflowBlocks.size() - 1).getAsJsonObject().get("x").getAsInt() == 32,
+                "contracts: overflow keeps the NEAREST 32 (x=1..32 of 1..40)");
+
+        // exactly 32 matches -> truncated false (boundary)
+        ToolContracts.BlockProbe row32 = (x, y, z) ->
+                (y == 64 && z == 0 && x >= 1 && x <= 32) ? "minecraft:oak_log" : null;
+        JsonObject exact = ToolContracts.scanBlocks(0.5, 64.5, 0.5, 64, row32,
+                ToolContracts.BlockFilter.parse(List.of("minecraft:oak_log")), null);
+        check(exact.get("count").getAsInt() == ToolContracts.FILTERED_BLOCKS_CAP
+                        && !exact.get("truncated").getAsBoolean(),
+                "contracts: exactly 32 matches -> truncated false");
+
+        // #tag filter through a fake TagProbe (real one wraps BlockState.is)
+        ToolContracts.TagProbe logsTag = (name, tagId) -> "minecraft:logs".equals(tagId)
+                && (name.equals("minecraft:oak_log") || name.equals("minecraft:spruce_log"));
+        ToolContracts.BlockProbe grove = (x, y, z) -> switch (x + "," + y + "," + z) {
+            case "1,64,0" -> "minecraft:oak_log";     // distSq 1
+            case "-2,64,0" -> "minecraft:spruce_log"; // distSq 4
+            case "3,64,0" -> "minecraft:stone";       // not in tag
+            default -> null;
+        };
+        JsonObject tagged = ToolContracts.scanBlocks(0.5, 64.5, 0.5, 8, grove,
+                ToolContracts.BlockFilter.parse(List.of("#minecraft:logs")), logsTag);
+        JsonArray taggedBlocks = tagged.get("blocks").getAsJsonArray();
+        check(tagged.get("count").getAsInt() == 2
+                        && "minecraft:oak_log".equals(taggedBlocks.get(0).getAsJsonObject().get("block").getAsString())
+                        && "minecraft:spruce_log".equals(taggedBlocks.get(1).getAsJsonObject().get("block").getAsString()),
+                "contracts: #tag filter matches tag members only, nearest-first");
+
+        // mixed id + tag entries
+        JsonObject mixed = ToolContracts.scanBlocks(0.5, 64.5, 0.5, 8, grove,
+                ToolContracts.BlockFilter.parse(List.of("minecraft:stone", "#minecraft:logs")), logsTag);
+        check(mixed.get("count").getAsInt() == 3 && !mixed.get("truncated").getAsBoolean(),
+                "contracts: mixed id+#tag filter unions matches");
+
+        // nothing matches -> empty result, not an error
+        JsonObject miss = ToolContracts.scanBlocks(0.5, 64.5, 0.5, 8, woods,
+                ToolContracts.BlockFilter.parse(List.of("minecraft:diamond_ore")), null);
+        check(miss.get("count").getAsInt() == 0 && miss.get("blocks").getAsJsonArray().size() == 0
+                        && !miss.get("truncated").getAsBoolean(),
+                "contracts: filter with no matches -> empty, truncated false");
     }
 
     // ------------------------------------------------------------------ M2-B: events
