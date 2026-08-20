@@ -159,8 +159,11 @@ EYE_HEIGHT = 1.62
 BREATH_AIR_THRESHOLD = 240
 #: 换气动作上限（秒）：封顶还浮不上去 → 立刻上报失败
 BREATH_MAX_SECONDS = 10.0
-#: 每次上浮按键的按住时长（毫秒）；循环续按直到脱离
-BREATH_PRESS_MS = 400
+#: 每次上浮按键的按住时长（毫秒）；循环续按直到脱离。
+#: M4.1 压测修正（深水死亡归因）：旧值 400ms 按 / 500ms 歇的低占空比在深水柱
+#: 净上浮≈0（按住上升段被歇息下沉段吃光）；改高占空比——按满 800ms 等释放
+#: 再复查，间隙只剩一次 getStats 往返（T6 深水场景回归 PASS 的来源）
+BREATH_PRESS_MS = 800
 #: 脱困窗口（秒）：40 tick 精读实测值
 UNSTUCK_WINDOW = 2.0
 #: 脱困位移阈值（格）：窗口内位移 <0.75 判卡住
@@ -239,6 +242,7 @@ class BodyState:
     threat: ThreatFact | None = None
     companion: tuple[float, float, float] | None = None
     movement_active: bool = False  # walkTo/collectBlock 原语执行中（=有移动输入）
+    yaw: float | None = None       # getStats.yaw（M4.1：协议 1.3 起上报；None=旧 bridge）
     position_window: deque = field(
         default_factory=lambda: deque(maxlen=12))
 
@@ -319,6 +323,7 @@ class ReflexScheduler:
         urgent: Callable[[str], None] | None = None,
         self_uuid: Callable[[], str | None] | None = None,
         broadcast: Callable[[str], Any] | None = None,
+        broadcast_direct: Callable[[str], Any] | None = None,
     ) -> None:
         self.client = client
         self.level = level
@@ -328,6 +333,9 @@ class ReflexScheduler:
         self._self_uuid = self_uuid or (lambda: None)
         # 呼吸失败等"立刻上报"用；缺省退化成 log（单元测试不必带完整 loop）
         self._broadcast = broadcast
+        # 死亡等 GUI 屏蔽场景的直发通道（M4.1 T3，chat.send 绕开 T 键）；
+        # 缺省回落 broadcast
+        self._broadcast_direct = broadcast_direct
         self.body = BodyState()
         # 位置窗按轮询间隔定容：固定 maxlen 会在快轮询（测试 0.05s）下装不满
         # 2s 判定窗。容量取 6s 的样本数（≥12 兜底极慢轮询）
@@ -343,6 +351,8 @@ class ReflexScheduler:
         self._entity_tick = 0
         self._dead_latch = False
         self._dead_latch_at = 0.0
+        # M4.1 T5：cooperative 反射期间的 Baritone 暂停态（pause/resume 配对标记）
+        self._baritone_paused = False
 
     # ------------------------------------------------------------------ 装配
 
@@ -405,6 +415,64 @@ class ReflexScheduler:
         else:
             self.log(f"〔本能〕{text}")
 
+    async def broadcast_direct(self, text: str) -> None:
+        """直发聊天播报（M4.1 T3）：经 bridge 的 chat.send 通道绕开 T 键 GUI——
+        死亡屏打开时 T 键唤不起聊天框（M4-rerun §3.3：死亡播报 wire 已发、
+        游戏聊天无此行）。未接线时回落 broadcast（GUI 路径）。"""
+        if self._broadcast_direct is not None:
+            result = self._broadcast_direct(text)
+            if asyncio.iscoroutine(result):
+                await result
+        else:
+            await self.broadcast(text)
+
+    # ------------------------------------------------------------------ Baritone 让路（M4.1 T5）
+
+    async def safe_command(self, text: str) -> None:
+        """尽力发一条命令：失败只记日志、不抛出。
+
+        T6 压测实证（深水回归轮）：低血反射的 #stop 被 GUI 占用拒绝
+        （-32002）时抛异常会**跳过后续的直发警报与 urgent 注入**——保命链的
+        停止动作不该有能力打断警报。preempt 反射的关键路径统一走此口。
+        """
+        try:
+            await self.client.command(text)
+        except Exception as exc:  # noqa: BLE001 —— 命令失败降级为日志
+            logger.warning("反射命令 %r 发送失败（继续后续动作）：%s", text, exc)
+
+    async def pause_baritone(self) -> None:
+        """cooperative 反射生效期间暂停 Baritone 寻路（``#pause``）。
+
+        T5 裁决背景：cooperative 反射只接管按键、不掀任务也不撤目标——水下
+        GoalBlock 会把换气反射刚浮起的 bot 再按下去（M4-rerun 拉锯实证）。
+        #pause 让 Baritone 停下按键但保住目标，反射结束后 #resume 续走
+        （比 #stop+事后不重启优：walk 任务的原语还在等续走）。幂等；发送失败
+        只记日志——暂停不成也不该阻断保命动作本身。
+        """
+        if self._baritone_paused:
+            return
+        self._baritone_paused = True
+        try:
+            await self.client.command("#pause")
+            logger.info("Baritone 已 #pause（cooperative 反射接管按键）")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("#pause 发送失败（反射动作继续）：%s", exc)
+
+    async def resume_baritone(self) -> None:
+        """``pause_baritone`` 的对偶（只在真暂停过时发，幂等）。
+
+        期间若 preempt 反射已 ``#stop``（目标撤销），#resume 无目标可续、是
+        无害空操作——照发不误，逻辑上仍配对。
+        """
+        if not self._baritone_paused:
+            return
+        self._baritone_paused = False
+        try:
+            await self.client.command("#resume")
+            logger.info("Baritone 已 #resume（cooperative 反射归还控制）")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("#resume 发送失败：%s", exc)
+
     # ------------------------------------------------------------------ 主循环
 
     async def run(self) -> None:
@@ -458,6 +526,10 @@ class ReflexScheduler:
         if position is not None:
             self.body.position = position
             self.body.position_window.append((time.monotonic(), position))
+        # 朝向（M4.1：协议 1.3 起上报 yaw——unstuck 扇形基准/转头诊断数据源；
+        # 旧 bridge 无此字段 → None，使用方各自回落）
+        yaw = stats.get("yaw")
+        self.body.yaw = float(yaw) if isinstance(yaw, (int, float)) else None
         try:
             self.body.health = float(stats.get("health", 20.0))
         except (TypeError, ValueError):
@@ -604,14 +676,29 @@ class BreathReflex(ReflexChain):
                 and s.air <= BREATH_AIR_THRESHOLD)
 
     async def act(self, s: BodyState) -> None:
+        # M4.1 T5：Baritone 正在走（水下 GoalBlock 之类）时先 #pause 让路，
+        # 换气完 #resume 续走——消灭"浮起→再按下"拉锯；act 异常也保证归还
+        if s.movement_active:
+            await self.scheduler.pause_baritone()
+        try:
+            await self._press_until_surfaced()
+        finally:
+            await self.scheduler.resume_baritone()
+
+    async def _press_until_surfaced(self) -> None:
         started = time.monotonic()
         presses = 0
         surfaced = False
         while time.monotonic() - started < BREATH_MAX_SECONDS:
+            press_at = time.monotonic()
             await self.scheduler.client.call(
-                "input.key", {"code": GLFW_KEY_SPACE, "duration_ms": BREATH_PRESS_MS})
+                "input.key", {"code": GLFW_KEY_SPACE,
+                              "duration_ms": BREATH_PRESS_MS})
             presses += 1
-            await asyncio.sleep(0.5)
+            # 等本次按住真正结束（RELEASE 由 bridge 延迟调度）再复查——
+            # 高占空比上浮，且避免下一次 PRESS 被上一次的延迟 RELEASE 掐断
+            await asyncio.sleep(max(0.0, BREATH_PRESS_MS / 1000
+                                    - (time.monotonic() - press_at)) + 0.05)
             # 复查氧气：vanilla 露头即回满，air==300 即视为脱困
             try:
                 stats = await self.scheduler.client.call("getStats")
@@ -634,9 +721,10 @@ class BreathReflex(ReflexChain):
 class UnstuckReflex(ReflexChain):
     """脱困：40tick 窗口有移动输入但位移 <0.75 格 → 137° 扇形爆发 + 周期跳。
 
-    简化（报告注明）：当前 yaw 读不到（getStats 无朝向字段），扇形基准取 0°，
-    爆发本身是探索性的——转错方向也只是多试一段；跳跃是主要脱困手段。
-    cooperative：不掀任务，Baritone 的寻路输入与爆发按键在真客户端天然共存。
+    扇形基准取当前朝向（M4.1 起协议 1.3 的 getStats.yaw；旧 bridge 无 yaw 时
+    回落 0°），爆发本身仍是探索性的——转错方向也只是多试一段；跳跃是主要
+    脱困手段。cooperative：不掀任务，Baritone 的寻路输入与爆发按键在真客户端
+    天然共存（Baritone 卡住时它自己也在挣扎，两边的按键都不至于互相抵消）。
     """
 
     id = "unstuck"
@@ -666,8 +754,9 @@ class UnstuckReflex(ReflexChain):
     async def act(self, s: BodyState) -> None:
         self._cooldown_until = time.monotonic() + UNSTUCK_COOLDOWN
         position = s.position or (0.0, 0.0, 0.0)
+        base_yaw = s.yaw if s.yaw is not None else 0.0
         for burst in range(1, UNSTUCK_BURSTS + 1):
-            yaw = math.radians(UNSTUCK_TURN_DEG * burst)
+            yaw = math.radians(base_yaw + UNSTUCK_TURN_DEG * burst)
             dx, dz = -math.sin(yaw), math.cos(yaw)
             await self.scheduler.client.call(
                 "lookAt", {"x": position[0] + dx * 4.0,
@@ -701,7 +790,7 @@ class FireReflex(ReflexChain):
         scheduler = self.scheduler
         s.on_fire = False  # 本轮消费；再触发靠下一条 CRITICAL fire
         scheduler.preempt("fire")
-        await scheduler.client.command("#stop")
+        await scheduler.safe_command("#stop")
         position = s.position
         if position is None:
             scheduler.log("〔本能〕着火撤离：位置不可用，已停下任务等待火灭")
@@ -766,7 +855,12 @@ class FireReflex(ReflexChain):
 
 
 class HealthLowReflex(ReflexChain):
-    """低血：CRITICAL health_low → 掀任务 + 聊天上报 + 〔紧急〕注入认知。"""
+    """低血：CRITICAL health_low → 掀任务 + 聊天上报 + 〔紧急〕注入认知。
+
+    播报走 chat.send 直发通道（M4.1）：T6 压测实证"低血警报发出前毫秒级死亡、
+    死亡屏占 GUI 吞掉 T 键路径"的窗口期竞争——警报这类关键上行不该依赖
+    GUI 状态。
+    """
 
     id = "health_low"
     interrupt = "preempt"
@@ -783,9 +877,9 @@ class HealthLowReflex(ReflexChain):
         s.health_low = False
         self._cooldown_until = time.monotonic() + HEALTH_LOW_COOLDOWN
         scheduler.preempt("health_low")
-        await scheduler.client.command("#stop")
+        await scheduler.safe_command("#stop")
         health = s.health
-        await scheduler.broadcast(f"警报：我的血量只剩 {health:g} 了，已停下手上的事")
+        await scheduler.broadcast_direct(f"警报：我的血量只剩 {health:g} 了，已停下手上的事")
         scheduler.urgent(
             f"健康告警：生命值 {health:g}（阈值 6）。当前任务已被自保反射中止。"
             f"评估处境（周围有什么威胁、要不要继续撤退、能不能吃东西回血）后再行动。")
@@ -818,7 +912,9 @@ class DeathReflex(ReflexChain):
         position = s.position or (0.0, 0.0, 0.0)
         scheduler.preempt("death")
         x, y, z = position
-        await scheduler.broadcast(
+        # M4.1 T3：死亡屏打开时 T 键唤不起聊天框（M4-rerun §3.3 实证：wire 已发、
+        # 游戏聊天无此行）——播报走 chat.send 直发通道（GUI 屏蔽免疫）
+        await scheduler.broadcast_direct(
             f"我死了……死亡位置约 ({x:.0f},{y:.0f},{z:.0f})。等你指示，我不会自动重生。")
         scheduler.urgent(
             f"你刚刚死亡，位置约 ({x:.0f},{y:.0f},{z:.0f})。任务已被终止；"
@@ -854,7 +950,7 @@ class FleeReflex(ReflexChain):
         if threat is None or position is None:
             return
         scheduler.preempt("flee")
-        await scheduler.client.command("#stop")
+        await scheduler.safe_command("#stop")
         # 反方向 8 格（水平）
         dx = position[0] - threat.position[0]
         dz = position[2] - threat.position[2]

@@ -58,6 +58,8 @@ public final class SmokeMain {
         lookContracts();
         digContracts();
         permissionContracts();
+        chatContracts();
+        movementLook();
 
         System.out.println();
         System.out.println("smoke: " + passed + " passed, " + failures.size() + " failed");
@@ -631,11 +633,12 @@ public final class SmokeMain {
                 && !shot.get("downscaled").getAsBoolean(),
                 "contracts: screenshotResult fields");
 
-        // --- statsResult
+        // --- statsResult (yaw/pitch: M4.1 v1.3 additions, additive fields)
         ToolContracts.StatsSnapshot stats = new ToolContracts.StatsSnapshot(
                 18.5f, 17, 4.2f, 300, 27, 0.6f,
                 1.5, 64.0, -12.25, "minecraft:overworld", "survival",
-                List.of(new ToolContracts.EffectFact("minecraft:speed", 1200, 1)), true);
+                List.of(new ToolContracts.EffectFact("minecraft:speed", 1200, 1)), true,
+                -91.5f, 12.25f);
         JsonObject statsJson = ToolContracts.statsResult(stats);
         check(statsJson.get("in_game").getAsBoolean()
                 && statsJson.get("health").getAsFloat() == 18.5f
@@ -650,8 +653,10 @@ public final class SmokeMain {
                 && statsJson.get("effects").getAsJsonArray().size() == 1
                 && statsJson.get("effects").getAsJsonArray().get(0).getAsJsonObject()
                         .get("id").getAsString().equals("minecraft:speed")
-                && statsJson.get("alive").getAsBoolean(),
-                "contracts: statsResult full shape");
+                && statsJson.get("alive").getAsBoolean()
+                && statsJson.get("yaw").getAsFloat() == -91.5f
+                && statsJson.get("pitch").getAsFloat() == 12.25f,
+                "contracts: statsResult full shape (incl. M4.1 yaw/pitch)");
 
         // --- scanBlocks: solid 3x3x3 with one air hole, range 1
         JsonObject small = ToolContracts.scanBlocks(0, 0, 0, 1,
@@ -1658,6 +1663,19 @@ public final class SmokeMain {
                         && PermissionContracts.allows(FULL, true, LOOK) && PermissionContracts.allows(FULL, false, LOOK),
                 "permissions: full allows everything (default = M2-A behaviour)");
 
+        // --- M4.1 chat.send rides the CHAT action: GUI-immune, only observe denies
+        PermissionContracts.Action CHAT = PermissionContracts.Action.CHAT;
+        check(!PermissionContracts.allows(OBSERVE, true, CHAT)
+                        && !PermissionContracts.allows(OBSERVE, false, CHAT),
+                "permissions: observe denies chat.send (read-only tier)");
+        check(PermissionContracts.allows(INPUT_GUI, true, CHAT)
+                        && PermissionContracts.allows(INPUT_GUI, false, CHAT)
+                        && PermissionContracts.allows(INPUT_WORLD, true, CHAT)
+                        && PermissionContracts.allows(INPUT_WORLD, false, CHAT)
+                        && PermissionContracts.deniedRegardlessOfScreen(OBSERVE, CHAT)
+                        && !PermissionContracts.deniedRegardlessOfScreen(INPUT_GUI, CHAT),
+                "permissions: chat.send is screen-immune under every acting tier (M4.1 death-screen path)");
+
         // --- pre-flight veto helper (callers deny without a main-thread round trip)
         check(PermissionContracts.deniedRegardlessOfScreen(OBSERVE, INPUT)
                         && PermissionContracts.deniedRegardlessOfScreen(OBSERVE, LOOK)
@@ -1688,6 +1706,66 @@ public final class SmokeMain {
                         && message.contains("observe")
                         && message.contains("sirius_bridge.toml"),
                 "permissions: deniedMessage names the tier and the config key");
+    }
+
+    private static void chatContracts() throws Exception {
+        // --- validation: required, 1..256 code points
+        expectInvalid(() -> ChatContracts.chatSendParams(json("{}")),
+                "chat.send: missing string rejected");
+        expectInvalid(() -> ChatContracts.chatSendParams(json("{\"string\": \"\"}")),
+                "chat.send: empty string rejected");
+        expectInvalid(() -> ChatContracts.chatSendParams(json("{\"string\": 42}")),
+                "chat.send: non-string rejected");
+        expectInvalid(() -> ChatContracts.chatSendParams(
+                json("{\"string\": \"" + "x".repeat(257) + "\"}")),
+                "chat.send: 257 chars rejected (vanilla limit)");
+        ChatContracts.ChatSendParams ok = ChatContracts.chatSendParams(
+                json("{\"string\": \"我死了……\"}"));
+        check(ok.text().equals("我死了……"),
+                "chat.send: CJK text passes validation verbatim");
+
+        // --- result shapes
+        JsonObject notInGame = ChatContracts.notInGameChat();
+        check(!notInGame.get("in_game").getAsBoolean() && !notInGame.get("sent").getAsBoolean(),
+                "chat.send: not-in-game result is not an error");
+        JsonObject sent = ChatContracts.sentResult("hello");
+        check(sent.get("in_game").getAsBoolean() && sent.get("sent").getAsBoolean()
+                        && sent.get("length").getAsInt() == 5,
+                "chat.send: sent result carries in_game/sent/length");
+    }
+
+    private static void movementLook() {
+        // --- stationary / vertical-only motion: stay silent
+        check(MovementLook.nextYaw(90.0, 0.0, 0.0, 300.0) == null
+                        && MovementLook.nextYaw(90.0, 0.0, 0.0, 300.0) == null,
+                "movement look: no horizontal speed -> no write");
+        check(MovementLook.nextYaw(90.0, 0.0, 0.03, 300.0) == null,
+                "movement look: sub-threshold drift (fall wobble) -> no write");
+
+        // --- heading math: yaw 0 = +Z (south); moving +Z targets yaw 0,
+        //     so from current yaw 90 one 300deg/s tick steps -15 (shortest way)
+        Double north = MovementLook.nextYaw(90.0, 0.0, 0.215, 300.0);
+        check(north != null && Math.abs(north - 75.0) < 1e-9,
+                "movement look: one 50ms tick steps 15 deg toward the heading");
+        Double east = MovementLook.nextYaw(0.0, 0.215, 0.0, 300.0);
+        check(east != null && Math.abs(east - (-15.0)) < 1e-9,
+                "movement look: moving +X (east, yaw -90) turns the short way negative");
+
+        // --- deadzone: already facing the movement direction
+        check(MovementLook.nextYaw(0.0, 0.0, 0.215, 300.0) == null,
+                "movement look: within deadzone of the heading -> no write");
+
+        // --- wrap-around takes the short way: current 170, moving toward
+        //     heading -170 (velocity = the -170 view direction) -> delta +20
+        //     -> one step lands at 185 (unwrapped; vanilla normalizes on use)
+        Double wrap = MovementLook.nextYaw(170.0, 0.1736, -0.9848, 300.0);
+        check(wrap != null && Math.abs(wrap - 185.0) < 1e-9,
+                "movement look: wraps across +-180 along the shortest signed path");
+
+        // --- step clamps at the fixed angular speed, never overshoots a near target
+        Double small = MovementLook.nextYaw(5.0, 0.0, 0.06, 30.0);
+        check(small != null && Math.abs(small - 3.5) < 1e-9,
+                "movement look: 30deg/s tick (1.5 deg) never overshoots a 5-deg correction");
     }
 
     /** Named stand-in for an AbstractWidget subclass (typeName smoke checks). */

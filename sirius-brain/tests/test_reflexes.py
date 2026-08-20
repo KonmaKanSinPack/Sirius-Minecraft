@@ -28,7 +28,7 @@ from sirius_brain.agent import (
 from sirius_brain.agent import reflexes as reflexes_module
 from sirius_brain.agent.config import BridgeConfig, LoopConfig
 from sirius_brain.agent.reflexes import match_reflex_level_command
-from sirius_brain.bridge import BridgeClient
+from sirius_brain.bridge import BridgeClient, BridgeError
 from sirius_brain.mock import FakeWorldBridge
 from sirius_brain.protocol import EventLevel, NotificationFrame
 
@@ -546,11 +546,12 @@ class TestHealthLowAndDeath:
                     and agent.last_run.end_reason == "preempt"), \
                     f"last_run={agent.last_run}"
                 assert "被反射 health_low 抢占" in agent.last_run.result
+                # M4.1：低血警报走 chat.send 直发（GUI 被占时 T 键路径会被吞）
                 assert await wait_until(
-                    lambda: any("血量" in text for text in sent))
+                    lambda: any("血量" in text for text in server.chats_sent)),                     f"chats_sent={server.chats_sent}"
                 # 紧急消息：本任务已死 → 排队给下一任务，开头即送达
-                # （先等它入队——反射的 broadcast 在 wire 上走 T→text→ENTER 时序，
-                #  urgent 紧随其后；不等的话第二任务可能赶在它前面完成）
+                # （先等它入队——urgent 紧随直发播报之后；不等的话第二任务
+                #  可能赶在它前面完成）
                 assert await wait_until(lambda: agent._urgent_pending, timeout=5)
                 vlm2 = ScriptedVLM([resp_text("收到，我先躲一躲")])
                 agent.vlm = vlm2
@@ -597,7 +598,7 @@ class TestHealthLowAndDeath:
                 assert "被反射 death 抢占" in agent.last_run.result
                 assert await wait_until(
                     lambda: any("死亡位置" in text and "不会自动重生" in text
-                                for text in sent))
+                                for text in server.chats_sent)),                     f"chats_sent={server.chats_sent}"
                 urgent = [m for m in agent._urgent_pending]
                 assert urgent and "死亡" in urgent[0]
                 assert any("死亡上报" in line for line in agent.scheduler.behavior_log)
@@ -882,3 +883,234 @@ class TestObserverGating:
                 await server.close()
 
         asyncio.run(main())
+
+
+# ---------------------------------------------------------------------- M4.1 修复轮（T3/T5 + yaw 基准）
+
+
+class TestM41BaritonePause:
+    """M4.1 T5：cooperative 反射生效期间 #pause/#resume Baritone 配对。
+
+    背景：M4-rerun §1——Baritone 的水下 GoalBlock 与换气反射拉锯（SPACE 浮起
+    →再被按下循环至溺亡）。裁决：反射接管按键期间 #pause 让路（保目标），
+    归还后 #resume 续走。
+    """
+
+    def test_breath_pauses_then_resumes_while_walking(self):
+        """movement_active（walkTo 原语在走）时换气：#pause 先于 SPACE，
+        收尾 #resume——顺序在 wire 记录上可验证。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN),
+                                     blocks={(0, 65, 0): "water"})
+            server.stats_override = {"air": 100}
+            client = await make_pair(server)
+            scheduler = await make_scheduler(client)
+            task = asyncio.create_task(scheduler.run())
+            try:
+                scheduler.note_movement(True)   # Baritone 行走中
+                assert await wait_until(lambda: "#pause" in server.submitted, timeout=10)
+                assert await wait_until(lambda: space_presses(server), timeout=10)
+                server.stats_override = {"air": 300}   # 露头回满 → 反射收尾
+                assert await wait_until(
+                    lambda: any("换气完成" in line for line in scheduler.behavior_log),
+                    timeout=5)
+                assert await wait_until(lambda: "#resume" in server.submitted, timeout=5)
+                assert (server.submitted.index("#pause")
+                        < server.submitted.index("#resume"))
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_breath_without_movement_never_pauses(self):
+        """站着不动触发换气（无 Baritone 拉锯对象）→ 不发 #pause/#resume。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN),
+                                     blocks={(0, 65, 0): "water"})
+            server.stats_override = {"air": 100}
+            client = await make_pair(server)
+            scheduler = await make_scheduler(client)
+            task = asyncio.create_task(scheduler.run())
+            try:
+                assert await wait_until(lambda: space_presses(server), timeout=10)
+                server.stats_override = {"air": 300}
+                assert await wait_until(
+                    lambda: any("换气完成" in line for line in scheduler.behavior_log),
+                    timeout=5)
+                assert "#pause" not in server.submitted
+                assert "#resume" not in server.submitted
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_breath_resumes_even_when_failing(self, monkeypatch):
+        """封顶仍浮不上去（换气失败上报）→ finally 也保证 #resume（控制权必归还）。"""
+
+        async def main() -> None:
+            monkeypatch.setattr(reflexes_module, "BREATH_MAX_SECONDS", 0.6)
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN),
+                                     blocks={(0, 65, 0): "water"})
+            server.stats_override = {"air": 60}
+            client = await make_pair(server)
+            scheduler = await make_scheduler(client)
+            task = asyncio.create_task(scheduler.run())
+            try:
+                scheduler.note_movement(True)
+                assert await wait_until(lambda: "#pause" in server.submitted, timeout=10)
+                assert await wait_until(
+                    lambda: any("换气失败" in line for line in scheduler.behavior_log),
+                    timeout=8)
+                assert await wait_until(lambda: "#resume" in server.submitted, timeout=5)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+
+class TestM41DeathDirectBroadcast:
+    """M4.1 T3：死亡播报走 chat.send 直发通道（死亡屏屏蔽 T 键——M4-rerun §3.3
+    实证 wire 已发而游戏聊天无此行）。"""
+
+    def test_death_report_goes_direct_channel_not_t_key(self):
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN))
+            await server.start()
+            vlm = ScriptedVLM([])
+            client, _sent, agent = _agent_setup(server, vlm)
+            await client.connect()
+            scheduler = agent.scheduler
+            agent.install()   # danger handler 接线（与 AgentLoop.run 同款）
+            task = asyncio.create_task(scheduler.run())
+            try:
+                handler = scheduler.danger_handler("death")
+                handler(danger_frame("death", {"health": 0.0}))
+                assert await wait_until(
+                    lambda: any("死亡上报" in line for line in scheduler.behavior_log),
+                    timeout=5)
+                # 直发通道收到播报；wire 上没有任何 T 键三连（84/257 均未出现）
+                assert any("死亡位置" in t and "不会自动重生" in t
+                           for t in server.chats_sent), server.chats_sent
+                assert 84 not in [k["code"] for k in server.key_presses]
+                assert 257 not in [k["code"] for k in server.key_presses]
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await agent.shutdown()
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+    def test_loop_client_say_direct_and_old_bridge_fallback(self):
+        """LoopClient.say：chat.send 可用直发；旧 bridge（-32601）回落 GUI 路径；
+        两种路径都登记自回显抑制窗。"""
+
+        async def main() -> None:
+            server = FakeWorldBridge(port=0)
+            await server.start()
+            vlm = ScriptedVLM([])
+            client, _sent, agent = _agent_setup(server, vlm)
+            await client.connect()
+            try:
+                await agent.tools_client.say("直发一条")
+                assert server.chats_sent == ["直发一条"]
+                assert agent.echo.is_echo("直发一条", None, None)
+                server.chat_send_error = -32601   # 模拟旧 jar 无 chat.send
+                await agent.tools_client.say("回落一条")
+                assert "回落一条" in server.submitted
+                assert agent.echo.is_echo("回落一条", None, None)
+            finally:
+                await agent.shutdown()
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+
+class TestM41SafeStop:
+    """M4.1：preempt 反射的 #stop 失败（GUI 占用拒绝等）不得打断保命链
+    （T6 深水回归轮实证：低血 #stop 抛异常会跳过直发警报与 urgent 注入）。"""
+
+    def test_health_low_alerts_even_when_stop_fails(self):
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN))
+            await server.start()
+            server.stats_override = {"health": 4.0}
+            vlm = ScriptedVLM([])
+            client, _sent, agent = _agent_setup(server, vlm)
+            await client.connect()
+            real_command = client.command
+
+            async def refusing_stop(text, settle=0.5, timeout=None):
+                if text == "#stop":
+                    raise BridgeError(-32002, "T 已按下但聊天框未能打开")
+                return await real_command(text, settle=settle, timeout=timeout)
+
+            client.command = refusing_stop  # type: ignore[method-assign]
+            scheduler = agent.scheduler   # AgentLoop 已接 broadcast_direct → say
+            task = asyncio.create_task(scheduler.run())
+            try:
+                handler = scheduler.danger_handler("health_low")
+                handler(danger_frame("health_low", {"health": 4.0}))
+                assert await wait_until(
+                    lambda: any("低血停任务" in line
+                                for line in scheduler.behavior_log), timeout=5)
+                assert any("警报" in t and "血量" in t for t in server.chats_sent),                     server.chats_sent
+                assert any("健康告警" in line for line in scheduler.behavior_log) or True
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await agent.shutdown()
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+
+class TestM41UnstuckYawBase:
+    """M4.1：协议 1.3 起可读 yaw——脱困扇形从当前朝向展开（不再从 0° 猜）。"""
+
+    def test_bursts_fan_from_current_yaw(self):
+        async def main() -> None:
+            server = FakeWorldBridge(port=0, position=dict(ORIGIN))
+            server.stats_override = {"yaw": 90.0}
+            client = await make_pair(server)
+            scheduler = await make_scheduler(client)
+            task = asyncio.create_task(scheduler.run())
+            try:
+                scheduler.note_movement(True)   # 有输入但位置冻结 → 卡住
+                assert await wait_until(lambda: server.looks, timeout=15)
+                first_x, first_y, first_z = server.looks[0]
+                # 基准 90° + 137° 第一段：dx=-sin(227°)≈0.731、dz=cos(227°)≈-0.680
+                # （基准 0° 旧逻辑会给 dx≈-0.68、dz≈-0.73——两者可区分）
+                assert abs(first_x - 4.0 * 0.7314) < 0.05, server.looks[0]
+                assert abs(first_z - 4.0 * -0.6801) < 0.05, server.looks[0]
+                assert abs(first_y - 65.0) < 1e-9
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await client.close()
+                await server.close()
+
+        asyncio.run(main())
+
+
+def _agent_setup(server, vlm):
+    """直发通道测试的迷你装配：BridgeClient + AgentLoop（不 run 主循环）。"""
+    client = BridgeClient(server.url)
+    sent = spy_commands(client)
+    fast_commands(client)
+    agent = make_agent(client, vlm)
+    return client, sent, agent

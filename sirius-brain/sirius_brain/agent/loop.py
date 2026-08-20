@@ -240,6 +240,10 @@ class LoopClient:
       全部 command 调用经循环级锁串行（急停回话 / finish 播报 / command 工具 /
       M4 反射的 #stop、#goto 不并发交错 T→text→ENTER 序列）；**发出一条聊天
       （非 / # 开头）后打开注视窗口**——speaking_look 反射据此转头看主人
+    - ``say()``（M4.1 T3）：直发聊天——bridge 的 ``chat.send`` 通道（进程内
+      ClientPacketListener.sendChat，绕开 T 键 GUI）。死亡屏打开时 T 键唤不起
+      聊天框，死亡播报走这里；旧 bridge 无此工具（-32601）自动回落 command()
+      的 GUI 路径。同样登记自回显抑制窗、持同一把循环级锁
     - 其余属性/方法原样委托给真实 BridgeClient（call/subscribe_events/...）
     """
 
@@ -254,6 +258,30 @@ class LoopClient:
             effective_settle = self._loop.command_settle if settle is None else settle
             result = await self._client.command(text, settle=effective_settle,
                                                 timeout=timeout)
+        if not text.startswith(("/", "#")):
+            self._loop.scheduler.note_speaking()
+        return result
+
+    async def say(self, text: str, timeout: float | None = None) -> Any:
+        """直发一条聊天（chat.send，绕开 T 键 GUI——死亡屏等 GUI 屏蔽场景）。
+
+        与 ``command`` 同样的副作用纪律：登记自回显抑制窗（chat 事件回来
+        sender 未知时不当成新指令）、非 / # 开头打开注视窗口、持循环级锁
+        （绝不与在途 command 序列交错）。旧 bridge 无 chat.send（-32601）→
+        回落 GUI 路径（等价旧行为）。
+        """
+        async with self._loop._command_lock:
+            self._loop.echo.register(text)
+            try:
+                result = await self._client.call("chat.send",
+                                                 {"string": text}, timeout)
+            except BridgeError as exc:
+                if exc.code != -32601:
+                    raise
+                logger.info("chat.send 不可用（旧 bridge），回落 GUI 路径：%r",
+                            text[:60])
+                result = await self._client.command(
+                    text, settle=self._loop.command_settle, timeout=timeout)
         if not text.startswith(("/", "#")):
             self._loop.scheduler.note_speaking()
         return result
@@ -332,6 +360,7 @@ class AgentLoop:
             urgent=self.inject_urgent,
             self_uuid=lambda: self.self_uuid,
             broadcast=self._broadcast,
+            broadcast_direct=self._broadcast_direct,
         )
         self.scheduler.install_default_chains()
 
@@ -632,6 +661,15 @@ class AgentLoop:
             logger.info("已播报：%r", text[:120])
         except Exception as exc:  # noqa: BLE001
             logger.error("播报失败（%r）：%s", text[:60], exc)
+
+    async def _broadcast_direct(self, text: str) -> None:
+        """直发播报（M4.1 T3）：chat.send 绕开 T 键 GUI——死亡屏屏蔽 T 键的
+        播报通道（M4-rerun §3.3 实证）。失败只记日志（反射 act 不被打断）。"""
+        try:
+            await self.tools_client.say(text)
+            logger.info("已直发播报：%r", text[:120])
+        except Exception as exc:  # noqa: BLE001
+            logger.error("直发播报失败（%r）：%s", text[:60], exc)
 
     # ------------------------------------------------------------------ 工具执行
 

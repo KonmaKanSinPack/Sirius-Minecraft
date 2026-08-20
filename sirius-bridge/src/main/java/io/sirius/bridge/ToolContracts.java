@@ -256,12 +256,18 @@ public final class ToolContracts {
     public record EffectFact(String id, int duration, int amplifier) {
     }
 
-    /** Player stats extracted on the main thread (see PerceptionTools). */
+    /**
+     * Player stats extracted on the main thread (see PerceptionTools).
+     * {@code yaw}/{@code pitch} are the M4.1 v1.3 additions (movement-direction
+     * diagnostics, the unstuck fan base, natural-head-turn verification) -
+     * additive response fields, no protocol break for older brains.
+     */
     public record StatsSnapshot(float health, int food, float saturation, int air,
                                 int xpLevel, float xpProgress,
                                 double x, double y, double z,
                                 String dimension, String gameMode,
-                                List<EffectFact> effects, boolean alive) {
+                                List<EffectFact> effects, boolean alive,
+                                float yaw, float pitch) {
     }
 
     /** {@code getStats} result (in-game shape; see {@link #notInGame()} for the other one). */
@@ -293,6 +299,8 @@ public final class ToolContracts {
         result.addProperty("game_mode", s.gameMode());
         result.add("effects", effects);
         result.addProperty("alive", s.alive());
+        result.addProperty("yaw", s.yaw());
+        result.addProperty("pitch", s.pitch());
         return result;
     }
 

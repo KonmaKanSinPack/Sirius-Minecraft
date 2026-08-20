@@ -178,7 +178,9 @@ final class PerceptionTools {
                 player.level().dimension().location().toString(),
                 gameMode(mc, player),
                 effects,
-                player.isAlive());
+                player.isAlive(),
+                player.getYRot(),   // M4.1 v1.3: view direction (unstuck fan base / turn diagnostics)
+                player.getXRot());
     }
 
     /** Game mode from the client's player info, with an ability-based fallback. */

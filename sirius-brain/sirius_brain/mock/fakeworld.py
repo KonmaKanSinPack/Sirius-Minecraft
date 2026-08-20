@@ -85,9 +85,11 @@ BLOCK_TAGS: dict[str, set[str]] = {
     "#planks": _PLANK_IDS,
 }
 
-# BridgeClient.command 编排用的 GLFW 键码（与 bridge/client.py 一致）
+# BridgeClient.command 编排用的 GLFW 键码（与 bridge/client.py 一致；ESC 是
+# M4.1 发送失败后的输入框清理键）
 GLFW_KEY_T = 84
 GLFW_KEY_ENTER = 257
+GLFW_KEY_ESCAPE = 256
 
 
 def _normalized_block_id(block_id: str) -> str:
@@ -142,10 +144,15 @@ class FakeWorldBridge(MockBridgeServer):
         self.pitch = 0.0
         # wire 记录（断言用）
         self.submitted: list[str] = []          # ENTER 提交的聊天行（含 # 命令）
+        self.texts: list[str] = []              # M4.1：input.text 的 wire 记录
+        self.chats_sent: list[str] = []         # M4.1：chat.send 直发的 wire 记录
         self.looks: list[tuple[float, float, float]] = []
         self.clicks: list[dict[str, Any]] = []
         self.digs: list[dict[str, Any]] = []    # T6：dig 工具调用的 wire 记录
         self.key_presses: list[dict[str, Any]] = []  # M4：input.key 的 wire 记录
+        #: chat.send 模拟错误码（None=正常受理；-32601=模拟旧 jar 无此工具，
+        #: 测试直发通道的回落路径）
+        self.chat_send_error: int | None = None
         # 聊天框状态机（BridgeClient.command 的 T→text→ENTER 三连）
         self._chat_open = False
         self._pending_text: str | None = None
@@ -168,6 +175,10 @@ class FakeWorldBridge(MockBridgeServer):
             return self._result_key(params)
         if method == "input.text":
             return self._result_text(params)
+        if method == "getGuiState":
+            return self._result_gui_state()
+        if method == "chat.send":
+            return self._result_chat_send(params)
         return await super().tool_result(method, params)  # 未覆盖 → 通用成功
 
     # ------------------------------------------------------------------ 感知
@@ -412,6 +423,10 @@ class FakeWorldBridge(MockBridgeServer):
                 self.submitted.append(line)
                 if line.startswith("#"):
                     self._handle_baritone(line)
+        elif code == GLFW_KEY_ESCAPE:
+            # M4.1：ESC 丢弃聊天输入框残留（BridgeClient.command 发送失败后的清理）
+            self._chat_open = False
+            self._pending_text = None
         return {"injected": True, "key": f"glfw:{code}", "glfw_key": code,
                 "modifiers": list(params.get("modifiers") or []),
                 "duration_ms": int(params.get("duration_ms", 0)),
@@ -419,8 +434,32 @@ class FakeWorldBridge(MockBridgeServer):
 
     def _result_text(self, params: dict[str, Any]) -> dict[str, Any]:
         self._pending_text = str(params.get("string", ""))
+        self.texts.append(self._pending_text)
         return {"delivered": True, "length": len(self._pending_text),
                 "delivered_all": True}
+
+    def _result_gui_state(self) -> dict[str, Any]:
+        """getGuiState 的聊天状态机映射（M4.1 T1：BridgeClient.command 的时序确认源）。
+
+        形态对齐真 bridge GuiContracts：无屏 → ``{"screen_open": false}``；
+        聊天框 → ``{"screen_open": true, "screen_class": "ChatScreen", ...}``。
+        """
+        if not self._chat_open:
+            return {"in_game": True, "screen_open": False}
+        return {"in_game": True, "screen_open": True,
+                "screen_class": "ChatScreen", "slots": []}
+
+    def _result_chat_send(self, params: dict[str, Any]) -> dict[str, Any]:
+        """chat.send 直发（M4.1 T3）：绕开 T 键 GUI 的聊天通道——死亡屏占用时的
+        播报路径。``chat_send_error`` 模拟旧 jar（-32601）测回落。"""
+        if self.chat_send_error is not None:
+            raise ToolError(self.chat_send_error,
+                            f"chat.send unavailable (simulated {self.chat_send_error})")
+        text = str(params.get("string", ""))
+        self.chats_sent.append(text)
+        if text.startswith("#"):
+            self._handle_baritone(text)
+        return {"in_game": True, "sent": True, "length": len(text)}
 
     def _result_click(self, params: dict[str, Any]) -> dict[str, Any]:
         self.clicks.append(dict(params))

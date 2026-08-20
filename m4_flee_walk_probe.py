@@ -31,7 +31,7 @@ async def main() -> None:
         dist0 = math.hypot(tx - sx, tz - sz)
         print(f"[0] 起点 ({sx:.1f},{start['y']:.1f},{sz:.1f}) → 目标 ({tx},{tz})"
               f"（水平 {dist0:.0f} 格）")
-        prims = Primitives(client, poll_interval=0.5)
+        prims = Primitives(agent.tools_client, poll_interval=0.5)  # M4.1：走 LoopClient——command 与反射/播报共用命令锁，杜绝 wire 交错
         walk_task = asyncio.create_task(prims.walk_to(tx, tz, timeout=420.0))
         t0 = time.perf_counter()
         seen_logs: list[str] = []
