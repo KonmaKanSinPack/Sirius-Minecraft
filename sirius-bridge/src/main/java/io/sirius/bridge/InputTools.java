@@ -310,7 +310,11 @@ final class InputTools {
         }
 
         // One main-thread task: permission gate, evidence grab (Screen open +
-        // evidence on) then the first PRESS.
+        // evidence on) then the first PRESS. Evidence is captured at PRESS
+        // time in BOTH modes - for hold_ms too it proves the GUI state the
+        // click was aimed at when the press began (the screen may legally
+        // change mid-hold, e.g. a container opening; the evidence documents
+        // the click target, not the post-release state).
         final Object outcome = callOnMainThread(ctx, () -> {
             Minecraft mc = Minecraft.getInstance();
             boolean screenOpen = mc.screen != null;
@@ -336,23 +340,25 @@ final class InputTools {
 
         Evidence evidence = saveEvidence(start, p);
 
-        // RELEASE of the first press at +CLICK_HOLD_MS; further clicks every CLICK_INTERVAL_MS.
-        for (int i = 0; i < p.count(); i++) {
-            final long pressAt = i * InputContracts.CLICK_INTERVAL_MS;
-            final long releaseAt = i * InputContracts.CLICK_INTERVAL_MS + InputContracts.CLICK_HOLD_MS;
-            if (i > 0) {
-                SCHEDULER.schedule(() -> submitMouse(p.button(), InputConstants.PRESS), pressAt, TimeUnit.MILLISECONDS);
-            }
-            SCHEDULER.schedule(() -> submitMouse(p.button(), InputConstants.RELEASE), releaseAt, TimeUnit.MILLISECONDS);
+        // The PRESS above was injected inline inside the main-thread task; the
+        // timed tail (RELEASE of the first press at +CLICK_HOLD_MS, further
+        // clicks every CLICK_INTERVAL_MS - or, with hold_ms, the single
+        // delayed RELEASE at +hold_ms, the M2-A input.key scheduling pattern)
+        // comes from the pure plan in InputContracts so the smoke test can
+        // verify the timing without a client.
+        for (InputContracts.ScheduledClick event : InputContracts.clickSchedule(p)) {
+            int action = event.press() ? InputConstants.PRESS : InputConstants.RELEASE;
+            SCHEDULER.schedule(() -> submitMouse(p.button(), action), event.delayMs(), TimeUnit.MILLISECONDS);
         }
 
         ctx.audit("INPUT", summary("input.click", "btn" + p.button()) + " count=" + p.count()
+                + (p.holdMs() != null ? " hold_ms=" + p.holdMs() : "")
                 + " screen=" + start.screenName()
                 + (evidence.file() != null ? " evidence=" + evidence.file() : "")
                 + " result=ok");
         return Json.okResponse(ctx.id(), InputContracts.clickResult(
                 p.button(), p.count(), start.screenName() != null, start.screenName(),
-                evidence.file(), evidence.bytes()));
+                evidence.file(), evidence.bytes(), p.holdMs()));
     }
 
     /** Queues a mouse button event onto the main thread (best effort). */

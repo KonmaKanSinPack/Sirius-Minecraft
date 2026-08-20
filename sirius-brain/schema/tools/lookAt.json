@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "lookAt({ x, y, z })。spec §8.2。",
+  "description": "lookAt({ x, y, z, turn_speed_deg_s? })。spec §8.2；turn_speed_deg_s 为 M3.5 v1.2 增强。\n\nturn_speed_deg_s（30..720 度/秒）有值时平滑转头：固定角速度插值到目标朝向\n（yaw/pitch 同速推进、先到的轴等待，误差 <1° 收口精确落位），期间新的 look\n调用会替换目标；缺省 = 瞬间转（v1.0/v1.1 行为，完全向后兼容）。",
   "properties": {
     "x": {
       "title": "X",
@@ -13,6 +13,20 @@
     "z": {
       "title": "Z",
       "type": "number"
+    },
+    "turn_speed_deg_s": {
+      "anyOf": [
+        {
+          "maximum": 720.0,
+          "minimum": 30.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Turn Speed Deg S"
     }
   },
   "required": [

@@ -49,6 +49,19 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 
 
+class ToolError(Exception):
+    """tool_result 钩子主动回错误帧的通道（如 FakeWorldBridge 的 dig 触及外 -32602）。
+
+    server._on_request 捕获后按 code/message 组 ToolCallResponse(error=...) 回给调用方，
+    与真 Mod 的错误路径（BridgeError 抛到 brain 侧）一致。
+    """
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(f"[{code}] {message}")
+        self.code = code
+        self.message = message
+
+
 def _validation_summary(exc: ValidationError) -> list[dict[str, Any]]:
     """提取可 JSON 序列化的校验错误摘要（loc/msg/type）。"""
     return [
@@ -252,11 +265,22 @@ class MockBridgeServer:
                 id=req.id, result=scripted.result, error=scripted.error,
             ))
         else:
-            # 能力清单内但未编排：回通用成功（echo 参数便于测试断言）
-            await self._send(conn, ToolCallResponse(
-                id=req.id,
-                result={"ok": True, "method": req.method, "echo": req.params},
-            ))
+            # 能力清单内但未编排：走 tool_result 钩子（默认回通用成功，echo 参数便于
+            # 测试断言）；子类覆写它即可叠加状态化世界（T4 FakeWorldBridge）。
+            # 抛 ToolError = 钩子要求回错误帧（M3.5 T6：fake dig 的触及外/无效参数）
+            try:
+                result = await self.tool_result(req.method, req.params)
+            except ToolError as tool_error:
+                await self._send(conn, ToolCallResponse(
+                    id=req.id,
+                    error=ToolCallError(code=tool_error.code, message=tool_error.message),
+                ))
+                return
+            await self._send(conn, ToolCallResponse(id=req.id, result=result))
+
+    async def tool_result(self, method: str, params: dict[str, Any]) -> Any:
+        """未编排方法的通用结果（子类可覆写做状态化模拟，回落 super() 保持原行为）。"""
+        return {"ok": True, "method": method, "echo": params}
 
     # ---- task 分支：NEKO 兼容帧，延迟回 task_finished ----
 

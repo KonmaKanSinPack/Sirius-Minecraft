@@ -32,7 +32,9 @@ from . import frames, tasks
 from .tools import TOOL_PARAMS
 
 #: 协议版本（capabilities/list 协商用，见 mock 与 index.json）
-PROTOCOL_VERSION = "1.0"
+#: v1.1（M3.5）：world.query 加可选 filter、input.click 加可选 hold_ms（均向后兼容）
+#: v1.2（M3.5 T6）：新增 dig 智能挖掘原语、lookAt 加可选 turn_speed_deg_s 平滑转头
+PROTOCOL_VERSION = "1.2"
 
 #: JSON Schema 方言（pydantic v2 默认输出 draft 2020-12）
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"

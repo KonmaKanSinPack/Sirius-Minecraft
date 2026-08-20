@@ -354,7 +354,7 @@ class TestHello:
             assert frames, "客户端没有发出任何帧"
             assert frames[0].get("type") == "hello"
             assert frames[0].get("token") == "t0"
-            assert frames[0].get("protocol_version") == "1.0"
+            assert frames[0].get("protocol_version") == "1.2"  # M3.5 T6 起默认 1.2（config.py 同步）
             assert any(f.get("method") == "capabilities/list" for f in frames[1:])
 
         asyncio.run(scenario())

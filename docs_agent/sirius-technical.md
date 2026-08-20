@@ -4,7 +4,7 @@
 > 子项目命名：**sirius-bridge**（NeoForge 客户端 Mod，Java，眼与手）· **sirius-brain**（**Python** 后端大脑）
 > GitHub 仓库名：**Sirius-Minecraft**（避免与其他 Sirius 重名项目撞车；内部文档沿用 Sirius 称谓）
 
-> 状态：探讨阶段（实时更新） · 最后更新：2026-08-18
+> 状态：实现推进中（实时更新） · 最后更新：2026-08-20（M3.5 智能优化轮收尾）
 > 设计理念与动机见姐妹篇：[sirius-design.md](../docs_human/sirius-design.md)（人读的纯思路版本）
 > 本文档面向实现：代码落点、接口定义、数据结构、参数与边界条件。
 
@@ -84,6 +84,8 @@ L0 反射层（保命） > L1 规划器中断 > L2 执行器自查/超时 > L3 �
 ---
 
 ## 4. 工具暴露
+
+> **M3.5 落地注记（2026-08-20）**：本节规划器/执行器命令体系是 M5 蓝图（Mindcraft 命令风格）。M3.5 已按"操作型功能入 bridge、任务级组合在 brain"先例落地执行器侧对应物——VLM 工具表 14 项中的 walkTo/digBlock/collectBlock 即任务级原语（`sirius-brain/sirius_brain/agent/tools.py`，契约描述见 §8.2），M5 分层时执行器直接复用这套原语作动作底座。
 
 ### 4.1 规划器
 
@@ -344,18 +346,33 @@ memory_seeds: [ ... ]              # 初始玩家记忆（可选）
 - 后端 → Mod：工具调用（请求-响应，JSON Schema 参数 + `capabilities/list` 发现 + 版本协商）
 - Mod → 后端：事件推送（一等公民，主动唤醒 agent，`{type:"notification", event, data, timestamp, seq}`）
 
-**能力集**：
+**能力集**（v1.2 实现态；新增参数/工具标注引入版本，缺省参数行为与 v1.0 字节级兼容）：
 ```jsonc
 // 感知（原语，不含加工）
 screenshot({ tier: "full"|"crop", bbox?, quality })   // 它亲眼所见
-look({ yaw, pitch }) / lookAt({ x, y, z })
+look({ yaw, pitch }) / lookAt({ x, y, z, turn_speed_deg_s? })
+      // turn_speed_deg_s 30..720（v1.2）：固定角速度平滑转头，两轴同速推进、<1° 收口；
+      // 缺省=瞬间转（M2-D 行为不变）。新 turn 替换旧（supersede），旧等待者 converged:false 返回
 getGuiState()      // widget 树：standard（结构化）/ fallback（矩形+贴图名）
-world.query({ type: "blocks"|"entities", range })
+world.query({ type: "blocks"|"entities", range, filter? })
+      // filter（v1.1）：1..16 条 registry id（短名自动补 minecraft:）或 #tag（展开 tag 成员）；
+      // blocks 命中按与玩家距离升序返回 cap 32 + truncated；entities 按实体 type 过滤（拒 #tag）
+      // entities 载荷（v1.2）：minecraft:item 实体条目带 item（ItemStack 注册名）与 count——注册名可匹配，
+      // name 是客户端本地化中文名不可用于匹配
 getStats()
+
+// 动作层操作原语（v1.2；无可靠事件路径时的执行原语，见 §8.3 分工三层）
+dig({ x, y, z, timeout_ms? })
+      // 智能挖掘：触及≤4.5 校验（超距 -32602 教学文案）→ 300deg/s 平滑瞄准 → 动作层监视按住
+      // （startDestroyBlock/continueDestroyBlock，焦点免疫、遮挡穿透）→ 安全前置（邻格液体/上方落块拒绝）
+      // → result: broken/already_air/timeout/not_digging/blocked_liquid/blocked_falling + block/elapsed_ms/
+      // broken_via_occluder?/reason?
 
 // 输入（MCP 式 schema + 校验）
 input.mouseMove({ x, y })
-input.click({ button, count })
+input.click({ button, count, hold_ms? })
+      // hold_ms 0..10000（v1.1）：PRESS 主线程内联 + RELEASE 延迟调度；与显式 count 互斥（-32602）。
+      // 注意：事件层长按受 vanilla 焦点双门控（§8.3），挖掘场景应改用 dig
 input.key({ code, duration_ms, modifiers })
 input.text({ string })
 
@@ -363,6 +380,16 @@ input.text({ string })
 events.subscribe({ types: [...], min_level })
 events.watch({ stat, condition, hysteresis, cooldown_ms })
 ```
+
+**协议版本演进**（三处同步点：`sirius-brain/schema/index.json`（export_schema.py 导出）/ `sirius-bridge` `Capabilities.java` / `sirius-brain` `bridge/config.py` 默认 hello 版本）：
+
+| 版本 | 轮次 | 内容 |
+|---|---|---|
+| 1.0 | M0 冻结 | 基础感知/输入/事件/任务帧（27 个 schema） |
+| 1.1 | M3.5 T1 | world.query 加 `filter`；input.click 加 `hold_ms`；entities 结果补 `truncated` |
+| 1.2 | M3.5 T6/T7 | 新工具 `dig`；lookAt 加 `turn_speed_deg_s`；entities item 载荷加 `item`/`count`（纯增响应字段，协议层面无需 bump 的边界情况，随 T6 一并升版） |
+
+**brain 侧 VLM 工具表（14 项，M3.5；`sirius-brain/sirius_brain/agent/tools.py` default_registry）**：9 个 bridge 工具直通（getStats/getGuiState/world.query/screenshot/lookAt/input.*×4，参数 schema 读冻结产物）+ 3 个任务级原语（walkTo/digBlock/collectBlock——handler 包装 `agent/primitives.py`，描述写 Numen 式契约：受理即执行/失败读建议/同参数重发续做）+ command + finish（agent 层定义）。walkTo/collectBlock 是 brain 组合原语（Baritone #goto 走 command 聊天通道），不是 bridge 工具。
 
 **事件分级**：CRITICAL（溺水/着火/被攻击/死亡/断线→反射层立即或 L1 中断）、WARNING（饥饿/GUI变化→排队）、INFO（聊天/天气→缓冲）。
 
@@ -388,14 +415,17 @@ events.watch({ stat, condition, hysteresis, cooldown_ms })
 
 **安全模型（内建）**：默认 localhost；token 握手；权限分级 `observe`/`input_world`/`input_gui`；输入限频 ~20次/s；审计日志。（对齐 Numen MCP 服务端已验证的安全实践）
 
-**分工原则**：输入标准化、感知原语化——Mod 是哑管道，怎么用归后端。
+**分工原则（2026-08-20 M3.5 修订：原"哑管道"两层升三层）**：
+1. **感知原语化**：Mod 上报未加工的世界数据（screenshot/world.query/getStats/getGuiState），不做语义加工；
+2. **输入标准化**：一切注入走可校验的 schema 化原语（input.*）与聊天通道（command）；
+3. **动作层操作原语**：无可靠事件路径的连续操作（事件层长按被 vanilla 焦点双门控废掉、视角控制）允许 Mod 提供操作型工具——M2-D `look` 开先例、M3.5 `dig` 确立为模式（真机证据链见 reports/M3.5-T6.md §二.1）——对 brain 暴露意图级接口（"挖这个方块"→结果判定），不暴露按键细节；**任务级语义组合仍在 brain**（walkTo/collectBlock 是 brain 原语，Baritone 经 command 通道驱动，Mod 无任务概念）。
 
-### 8.3 反射层与寻路（brain 侧，设计借鉴 Numen；2026-08-19 用户裁决归属）
+### 8.3 反射层与寻路（brain 侧，设计借鉴 Numen；归属 2026-08-19 裁决、寻路 2026-08-20 裁决）
 
-- **归属裁决（2026-08-19）**：Bridge 是哑管道（只上报/接受信息，见 §8.2 分工原则），一切处理归 brain——反射层实现为 **brain 侧无 LLM 规则模块**，消费 Bridge 上报的 CRITICAL 危险事件（drown/fire/health_low/death，M2-B 已实现），回灌 input.* 指令；localhost WS 往返延迟对本能响应足够（MLG 级毫秒精度需求届时再议，可设计"预武装模式"由 brain 预授指令模板）
+- **归属裁决（2026-08-19）**：Bridge 按分工三层提供原语（见 §8.2 分工原则），任务语义与处理归 brain——反射层实现为 **brain 侧无 LLM 规则模块**，消费 Bridge 上报的 CRITICAL 危险事件（drown/fire/health_low/death，M2-B 已实现），回灌 input.* 指令；localhost WS 往返延迟对本能响应足够（MLG 级毫秒精度需求届时再议，可设计"预武装模式"由 brain 预授指令模板）
 - **本能链：序数固定分层（2026-08-19 依据 Numen 现行代码修正；原"每 tick 数值竞价出价制"是 Numen 旧设计，其现行 TaskSelector 已退役浮点竞价）**：按注册序自上而下问 `canRun()`，首个可运行者独占身体；层级固定（反射 → 同步槽 → 当前任务 → 空闲姿态），每层至多一个候选，无比较可言——可预测性优先于"最优性"（Numen TaskSelector.java:21-67 的裁决理由）。分层参照：MLG > 换气 > 怪物防御 > 脱困（序数 10/20/30/50 仅表顺序）。**中断=边沿触发**（胜者变化的那一 tick 才 `stop(PREEMPTED)`，不是每 tick 重发）；**抢占≠结算**（任务保留状态，截止时间在抢占期每 tick 冻结 +1，任务恢复后仍恰好产出一次结果）；任务可钉住（pin）特定反射，身体空闲时自动释放
-- **寻路**：brain 侧 A*（世界数据来自 world.query/事件流）+ 预算化部分路径提交 + 路径跟随看门狗，经 input.key 驱动移动（参考 Baritone 可行性证明与 Numen 寻路层设计文档；**不复制任何源码**）；Baritone 作为 bridge 侧运动能力依赖的选项在 M4 前裁决——若采纳则属例外，须重新评审"哑管道"边界
-- 异步任务受理即回执 `{task_id, async:true}`，`task_finished/task_timeout` 事件；**替换式受理**（派新活顶掉旧活，旧任务恰好结算一次；唯一拒绝例：同 tick 内刚受理的任务——防模型一轮内双重派单）；**重派=重算**（无恢复簿记，进度已在背包里）；超时报告带进度与"推进中→重派同目标 vs 停滞→改主意"裁决信息
+- **寻路（2026-08-20 裁决：Baritone 集成，撤销自研 A* 计划）**：客户端装 Baritone Mod（1.21.1 / NeoForge 构建真机验证通过），brain 经 command 聊天通道发 `#goto x [y] z` / `#stop` 驱动（`#` 前缀被 Baritone 客户端拦截，不达服务器——对服务器零可见）。`sirius_brain/agent/primitives.py` 的 `walk_to` 封装：15s 无进展看门狗只重发一次、发令前界面屏障（quickPlay 加载屏竞态教训）、协作取消≤1s（取消/超时发 #stop 并报当前坐标）。原"brain 侧 A* + world.query 数据 + input.key 驱动"路线**不再实施**；M4 寻路内容收窄为 Baritone 注入路径优化（#goto 每次聊天往返 ~1.3s，collect 提速的下一个空间）。原"API 依赖 vs 完全自主"的顾虑不成立——集成面只有聊天命令，无代码级依赖
+- 异步任务受理即回执 `{task_id, async:true}`，`task_finished/task_timeout` 事件；**替换式受理**（派新活顶掉旧活，旧任务恰好结算一次；唯一拒绝例：同 tick 内刚受理的任务——防模型一轮内双重派单）；**重派=重算**（无恢复簿记，进度已在背包里）；超时报告带进度与"推进中→重派同目标 vs 停滞→改主意"裁决信息。**M3.5 现状注记**：已落地的 walkTo/digBlock/collectBlock 走"同步阻塞 + 协作式取消"（AgentLoop 串行执行工具，60s 行走占 1 个 tool call 位、期间零 VLM 调用；cancel 微步轮询≤1s），M5 分层时再升级异步受理（task/task_finished 协议帧已备好）
 
 ### 8.4 从 Numen 吸收的设计修正（保留）
 
@@ -472,8 +502,8 @@ events.watch({ stat, condition, hysteresis, cooldown_ms })
 开发四原则：薄切片先通再逐层加厚；风险前置（输入注入保真度最先验证）；协议先行（契约冻结后两轨并行）；每步有真人可看的演示。
 
 ```
-sirius-bridge（身体轨，Java，哑管道）：M1 眼 → M2 手 ── M3 会师 ──→ M4（仅原语增补）→ …
-sirius-brain（大脑轨，Python）：M0 协议冻结（对 mock body 开发）→ M3 会师 ──→ M4 反射+寻路（智能全在此轨）→ …
+sirius-bridge（身体轨，Java）：M1 眼 → M2 手 ── M3 会师 ─ M3.5 智能原语（dig/平滑转头/感知过滤）──→ M4（仅原语增补）→ …
+sirius-brain（大脑轨，Python）：M0 协议冻结（对 mock body 开发）→ M3 会师 ─ M3.5 任务级原语（智能下沉此轨）──→ M4 反射层（智能全在此轨）→ …
 ```
 
 > 并行轨修正（Python 裁决的代价）：大脑不再借用 mineflayer 身体（纯 JS 库）。对策 = **mock 优先**：M0 的 Python mock body 回放录制的真实协议帧，大脑全逻辑对 mock 开发；如需早期真机联调，可写百行 Node 垫片把 Mindcraft CE 包成 sirius 协议身体（可选，不进主线）。
@@ -484,20 +514,21 @@ sirius-brain（大脑轨，Python）：M0 协议冻结（对 mock body 开发）
 | **M1 眼睛** | screenshot/getStats/world.query + localhost/token | Python 客户端连上并截图存盘，整合包客户端画面正确（含 Mod 内容） | S |
 | **M2 手** | input.* 四原语 + 事件订阅推送 | **纯脚本重放**"按 E 开背包→拖木头→合成工作台"——证明项目可行性 | M |
 | **M3 会师：最小整机** ⭐ | 大脑最简版（**单模型，先不分层**）结构化感知+按需截图→VLM（tool-calling）→工具（NEKO 兼容层已取消，2026-08-19 裁决） | 玩家在游戏聊天打字（如"把石头扔给我"），bot 听到并自主完成，全程闭环 | M |
-| **M4 反射+寻路** | brain 侧本能链（序数分层，消费 CRITICAL 事件）；寻路（brain 侧 A*，评估 Baritone 可选依赖） | 被围攻能脱战；"跟我来"能穿越 200 格 | L |
+| **M3.5 智能优化** ⭐（2026-08-20 完成） | 运动控制从 VLM 下沉确定性代码：brain 任务级原语 walkTo/digBlock/collectBlock + Baritone 集成（#goto/#stop）+ bridge dig 智能挖掘（动作层监视按住）/lookAt 平滑转头/world.query filter/input.click hold_ms/entities item 载荷 + 提示契约层（分层引导+滚动状态+预算 500k）；协议 1.0→1.2；VLM 工具表 11→14 | 砍树 22 步 212k 预算耗尽 → 4 步 16k tokens（T5b 直驱）；急停原语中 ≤1s；pytest 263→302 + smoke 241→345 + 真机多项 PASS | S/M |
+| **M4 反射层**（原"反射+寻路"；寻路已由 M3.5 Baritone 集成解决，2026-08-20 收窄） | brain 侧本能链（序数分层，消费 CRITICAL 事件）；次项：Baritone 注入路径优化（#goto 聊天往返 ~1.3s/次）、系统提示硬约束（本地 VLM 观察类问题不调工具直接幻觉作答） | 被围攻能脱战；"跟我来"能穿越 200 格（Baritone 已实证中短距，200 格属验收扩展） | M |
 | **M5 分层大脑** | 规划器/执行器分家、任务卡、TaskManager（替换式受理）、双 history；移植 Mindcraft CE 命令/对话 | 挖矿时连续聊天不阻塞；"搞一组铁装备"能分解执行 | M |
 | **M6 记忆 L1/L2+玩家记忆** | 活跃层得分、LanceDB、证据数学全套 | 跨会话记得玩家愿望；被纠正的错误不再犯 | M |
 | **M7 L3 知识库** | 数据包导入、触发式检索、置信度演化、图像记忆 | 新 Mod 玩 3 小时后能答"紫色方块怎么用"，答案可溯源 | M/L |
 | **M8 Skill 沉淀** | 轨迹记录、提炼、验证转正、退化重学；亲手模式 | 第二次同类 Mod 机器操作直接调 skill 快速完成 | L |
 | **M9 陪伴感** | 主动陪伴触发器（nudge 循环，抄 NEKO 参数）、现实时间、人格演化、语音（直连 TTS，M9 前再定方案） | 深夜主动唠叨；boss 出现主动惊叹 | S/M |
 
-**阶段递进逻辑**：M0-M3 证明它能活 → M4-M8 证明它好用 → M9 证明它像人。
+**阶段递进逻辑**：M0-M3 证明它能活 → M3.5 证明它"能用"（复杂任务在预算内跑完）→ M4-M8 证明它好用 → M9 证明它像人。
 
 ### 关键决策点（到时再定）
 
 | 决策点 | 时点 | 内容 |
 |---|---|---|
-| Baritone 依赖 vs 自研寻路 | M4 前 | API 依赖（LGPL，法律干净）省数月 vs 完全自主 |
+| ~~Baritone 依赖 vs 自研寻路~~ | ~~M4 前~~ | **已决（2026-08-20，M3.5）：Baritone 集成**——客户端 Mod 安装，brain 经聊天命令 `#goto`/`#stop` 驱动（无 API 依赖，`#` 前缀客户端拦截不达服务器），真机冒烟 3s 收敛 2.0 格；M4 相应收窄（见里程碑表） |
 | 执行器①是否引入 Numen 式确定性任务 | M5 前 | 挖矿/战斗等高频任务硬化成代码，小模型只做长尾 |
 
 ### 贯穿全程的工程纪律

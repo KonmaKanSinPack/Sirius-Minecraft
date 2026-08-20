@@ -1,6 +1,6 @@
 {
-  "protocol_version": "1.0",
-  "exported_at": "2026-08-18T08:54:27Z",
+  "protocol_version": "1.2",
+  "exported_at": "2026-08-19T18:49:25Z",
   "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "generator": "sirius_brain.protocol.export_schema",
   "categories": {
@@ -19,6 +19,7 @@
       "screenshot": "tools/screenshot.json",
       "look": "tools/look.json",
       "lookAt": "tools/lookAt.json",
+      "dig": "tools/dig.json",
       "getGuiState": "tools/getGuiState.json",
       "world.query": "tools/world.query.json",
       "getStats": "tools/getStats.json",
@@ -52,6 +53,7 @@
     "tasks/ReportProgress.json",
     "tasks/RequestDecision.json",
     "tasks/TaskCard.json",
+    "tools/dig.json",
     "tools/events.subscribe.json",
     "tools/events.watch.json",
     "tools/getGuiState.json",

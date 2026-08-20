@@ -2,14 +2,13 @@
 
 NeoForge mod running on the **real Minecraft client**, acting as the "eyes and hands" of the Sirius AI brain: screenshot capture, input injection, and event push. See `../docs_agent/sirius-technical.md` §8.2 for the full spec.
 
-> Current status: **M2-D look + permission tiers implemented** - `look` /
-> `lookAt` rotate the player's view absolutely, and a `permission` config
-> tier gates every acting tool (`observe` / `input_gui` / `input_world` /
-> `full`). Together with the M2-A input primitives (`input.*`), the M1-C
-> perception tools (`screenshot`, `getStats`, `world.query`), the M2-B event
-> push channel and the M2-C GUI state the bridge has "eyes", "hands", a
-> passive attention channel, GUI comprehension and a gaze. `events.watch`
-> lands in M3+.
+> Current status: **M3.5-T6 dig primitive + smooth turning** - `dig({x,y,z,timeout_ms?})`
+> is an intelligent block-breaking primitive (smooth aim -> monitored action-layer
+> hold -> verdict), `lookAt` gained `turn_speed_deg_s` (fixed-angular-speed head
+> turns), and the filtered `world.query` path truncates by distance correctly.
+> Together with the earlier layers (`input.*`, perception, events, GUI state,
+> look, permission tiers) the bridge now has "eyes", "hands", a gaze that turns
+> naturally, and task-level mining intent. `events.watch` lands in M3+.
 
 ## Versions
 
@@ -51,10 +50,10 @@ When the client reaches the title screen, the mod starts a WebSocket server:
   resulting error code); every `input.*` call additionally writes an
   `INPUT` line with a parameter summary and result (ok / rate_limited /
   input_disabled / no_screen).
-- **Capabilities**: `capabilities/list` returns the 12 frozen capabilities
+- **Capabilities**: `capabilities/list` returns the frozen capabilities
   (name/version/input_schema) assembled from the schema JSON files copied into
   the jar at build time from `../sirius-brain/schema` (single source of truth;
-  see "Schema sync" below). Protocol version: `"1.0"`.
+  see "Schema sync" below). Protocol version: `"1.2"`.
 
 ### Config file
 
@@ -83,6 +82,7 @@ fall back to the default plus a note in the log.
 | `request` `world.query` | see "The perception tools" below |
 | `request` `input.key` / `input.text` / `input.mouseMove` / `input.click` | see "The input tools" below |
 | `request` `look` / `lookAt` | see "The look tools" below |
+| `request` `dig` | see "The dig tool (M3.5 v1.2)" below |
 | `request` `getGuiState` | see "The GUI state tool" below |
 | `request` `events.subscribe` | see "The event push channel" below |
 | `request` any other method | `-32601` `not implemented: <method>` (until M3) |
@@ -155,22 +155,43 @@ Not in a world -> `{"in_game": false}`.
 - `type:"blocks"`: cubic scan around the player's block position; every
   **non-air** block is returned as `{x, y, z, block: "minecraft:stone"}`
   (unloaded chunks read as air and drop out). Capped at **512** entries -
-  beyond that `truncated:true` and enumeration stops:
+  beyond that `truncated:true` and enumeration stops (v1.0 semantics,
+  unchanged; note the stop happens at an arbitrary scan-order corner, so a
+  truncated unfiltered result may drop near blocks - callers wanting
+  nearest-first guarantees should use `filter`):
 
 ```json
 {"blocks":[{"x":10,"y":64,"z":-3,"block":"minecraft:stone"}, ...],
  "count":512,"truncated":true}
 ```
 
+- **`filter` (v1.1, T6-hardened)**: optional array of block registry ids
+  (`"minecraft:oak_log"`, bare paths auto-namespaced) and/or `#tag`s
+  (`"#minecraft:logs"`; tags not supported for entities). The filtered path
+  collects ALL matches in the cube (bounded by a 4096-match memory guard),
+  sorts by distance to the player (block center, ascending), then caps at
+  **32** entries with `truncated:true` - so "truncated" never drops a NEAR
+  block (the T5a real-machine bug: cap-before-sort lost a 3.71-block target
+  at range 5.5 that range 4.0 could see; the T6 smoke test pins the
+  dense-scene and range-containment regressions).
+
 - `type:"entities"`: everything from `ClientLevel.entitiesForRendering()`
   within `range` (3D distance, player included) as
   `{uuid, name, type, position:{x,y,z}, health?}`. `health` is attached only
   when the client knows it (`LivingEntity` with health > 0); client-side mob
-  health is often unsynced, treat it as best-effort. Capped at 128 entries:
+  health is often unsynced, treat it as best-effort. **`minecraft:item`
+  entities additionally carry `item`** (the dropped stack's registry id,
+  e.g. `"minecraft:oak_log"`) and `count` (stack size) - T7; the display
+  `name` is client-localized and cannot be matched against ids, so the
+  registry id rides along (same philosophy as blocks). Non-item entities
+  keep the exact pre-T7 shape. Capped at 128 entries:
 
 ```json
 {"entities":[{"uuid":"...","name":"Zombie","type":"minecraft:zombie",
-              "position":{"x":5.0,"y":64.0,"z":0.5},"health":12.0}, ...],
+              "position":{"x":5.0,"y":64.0,"z":0.5},"health":12.0},
+             {"uuid":"...","name":"Oak Log","type":"minecraft:item",
+              "position":{"x":5.5,"y":64.5,"z":0.5},
+              "item":"minecraft:oak_log","count":1}, ...],
  "count":3}
 ```
 
@@ -350,8 +371,10 @@ verified in the 1.21.1 sources):
 | `input.click` in-world (attack/use/pick via KeyMapping) | works while the mouse is grabbed |
 | `input.mouseMove` position tracking (GUI click math) | works (position always updates) |
 | `input.mouseMove` -> **view rotation** | **does not work** |
+| `input.click` **hold-to-mine** (continuous destroy) | **silently does nothing once the mouse grab was lost** - see below |
 | GUI hover/drag updates (`mouseMoved`/`mouseDragged`) | **do not work** |
 | acquiring the mouse grab while un-grabbed (e.g. clicking through the title screen) | **does not work** (`MouseHandler.grabMouse` checks focus) |
+| `dig` (action-layer hold) | **works** - calls `gameMode.startDestroyBlock`/`continueDestroyBlock` directly, no mouse-grab dependency |
 
 The view-rotation limitation is double-gated in vanilla:
 `MouseHandler.onMove` only accumulates deltas when `isWindowActive()`, and
@@ -360,6 +383,17 @@ in `if (isWindowActive())`. There is no vanilla switch for it - known
 limitation, to be resolved in M4 pathing (either keep the game window
 focused, which is the normal "human watches" setup, or add an action-layer
 `player.turn()` look primitive, which has no event-callback entry anyway).
+
+**Continuous mining has the same gate (M3.5-T6 real-machine finding):**
+vanilla's per-tick `Minecraft.handleKeybinds` only continues destroying while
+`mouseHandler.isMouseGrabbed()`, and `grabMouse()` REFUSES the (re)grab
+whenever the window is not active. Consequence: after ANY chat-screen
+open/close while the window is unfocused (exactly the "AI plays, human
+watches and alt-tabs" workflow), an injected `input.click` PRESS still sets
+the key state but nothing mines - no error anywhere. Two mitigations: (a)
+the `dig` tool's hold runs on the action layer (`gameMode` calls) and is
+immune; (b) for raw `input.click` holds, keep the game window focused (the
+documented supported setup).
 
 Iconified (minimized) remains the hard case from M1-C/M2-A: the render loop
 stops draining `Minecraft.execute` tasks, so tools answer `-32603` after the
@@ -392,7 +426,7 @@ pair with the M2-A hands (aiming, pathing, "look at what I'm talking about").
  "previous": {"yaw": 37.0, "pitch": 0.0}}
 ```
 
-- **`lookAt({x, y, z})`** - world position to face. The rotation is vanilla's
+- **`lookAt({x, y, z, turn_speed_deg_s?})`** - world position to face. The rotation is vanilla's
   `Entity.lookAt` math inverted-exactly: from the eye position
   (`getEyePosition()`, i.e. feet + eye height) to the target,
   `yaw = atan2(dz, dx) - 90°`, `pitch = -atan2(dy, horizontal)` (all wrapped
@@ -403,6 +437,16 @@ pair with the M2-A hands (aiming, pathing, "look at what I'm talking about").
 {"in_game": true, "looked": true, "target": {"x": 10.0, "y": 65.0, "z": -3.5},
  "yaw": 14.04, "pitch": -11.31, "distance": 12.08}
 ```
+
+- **`turn_speed_deg_s` (v1.2, 30..720)** - optional smooth turning: instead of
+  snapping, the view advances toward the target at a FIXED angular speed (one
+  step per client tick, 50 ms; both axes at the same speed, the axis with less
+  distance arrives first and holds), landing on the exact target once both
+  axes are within 1 deg. The call BLOCKS until the turn ends and answers
+  `{"converged": true/false, "elapsed_ms": ...}` - `converged:false` means a
+  newer `look`/`lookAt`/`dig` superseded the turn (the newest look always
+  wins) or it self-expired. Absent `turn_speed_deg_s` = the instant v1.0/v1.1
+  behaviour, byte-for-byte. `dig`'s internal aiming uses a fixed 300 deg/s.
 
 - Not in a world (title screen): `{"in_game": false, "looked": false}` - not
   an error, the getStats convention.
@@ -416,6 +460,61 @@ pair with the M2-A hands (aiming, pathing, "look at what I'm talking about").
   (`atan2(0,0)=0` -> yaw -90, pitch 0 - the same harmless answer vanilla's
   own `lookAt` gives); the rotation applies next rendered frame; while dead
   the rotation still writes but the server may ignore it.
+
+## The dig tool (M3.5 v1.2)
+
+`dig({x, y, z, timeout_ms?})` is an **intelligent block-breaking primitive**:
+the brain sends intent ("dig this block") and gets a verdict, instead of
+hand-orchestrating lookAt + click-hold segments (which fight vanilla's
+progress-reset-on-release and burn minutes on occluded trunks - the M3.5-T5a
+lesson). Parameters: integer block coordinates REQUIRED;
+`timeout_ms` 600..30000, default 15000. One call = one input rate-limit token;
+audited like `input.*`; permission tier treats it as `Action.INPUT`
+(`input_world` allows it with no GUI open - same class as `input.*`).
+
+Pipeline (per call, game access on the client main thread):
+
+1. **Pre-checks**: in-world; permission/screen gate; eye-to-block-CENTER
+   distance <= 4.5 (beyond answers `-32602` with a "walk closer first"
+   teaching message); target air -> `already_air` (idempotent success);
+   safe-to-break minimal set: any of the six neighbours holding a liquid ->
+   `blocked_liquid` (breaking in would open a flow), a `FallingBlock` (sand /
+   gravel / concrete powder) directly above -> `blocked_falling`; both carry
+   a human-readable `reason`.
+2. **Smooth aim**: a `TurnController` turn at **300 deg/s** to the block
+   center (the "natural head turn" of T6); re-issued automatically if the
+   view drifts off (e.g. Baritone finishing its approach).
+3. **Monitored hold (action layer)**: instead of injecting a mouse PRESS
+   (whose continuous-destroy is double-gated on OS focus - see the
+   "Unfocused-window behaviour" section), the monitor calls the exact
+   gameMode methods vanilla's held-button path runs:
+   `startDestroyBlock` on press, `continueDestroyBlock` per tick,
+   `stopDestroyBlock` on release (+ hand swing). Per `ClientTickEvent.Post`
+   tick the pure `DigContracts.DigMonitor` decides:
+   - **Main signal**: target block turned air or a different registry id ->
+     release, `result:"broken"` (the crosshair having been chewing a
+     DIFFERENT block marks `broken_via_occluder:true` - leaves in front of a
+     trunk break first, then the trunk);
+   - **Occluder tolerance (hysteresis)**: the crosshair hitting another block
+     NEVER fails the dig - jitter included (Numen ExecHarness lesson);
+   - **Telemetry early-stop**: vanilla's `getDestroyStage()` (crack 0-9,
+     -1 idle) staying -1 for 40 pressing ticks -> `not_digging` (misaligned /
+     out of sync); aim never converging within 5 s -> `not_digging`;
+   - **Insta-mine**: `getDestroyProgress >= 1.0` (grass, some leaves) ->
+     short press of 3 ticks then release (protects the block behind), with
+     bounded retries;
+   - **Timeout** -> `timeout` (tool insufficient / protected - teaching, not
+     an error). A screen opening mid-dig aborts honestly (a held press must
+     never leak into a GUI); a new dig supersedes the old one.
+
+```json
+{"in_game": true, "result": "broken", "block": "minecraft:oak_log",
+ "elapsed_ms": 3935, "broken_via_occluder": true}
+```
+
+`result` vocabulary the brain maps to teaching phrases: `broken` /
+`already_air` / `timeout` / `not_digging` / `blocked_liquid` /
+`blocked_falling`.
 
 ## Permission tiers (M2-D)
 
@@ -640,18 +739,22 @@ configuration instead.
 
 `build` also runs the **smoke test** (`gradlew smokeTest`, wired into
 `check`): an in-process `main()` that exercises the pure halves of the
-perception, input, event-push, GUI state and look code - parameter
+perception, input, event-push, GUI state, look and dig code - parameter
 validation, bbox cropping, both JPEG budget ladders, response assembly,
-block scan and entity filtering, the key-name table, the rate-limiter token
-bucket, evidence file naming, the config parser (incl.
+block scan and entity filtering (including the T6 dense-scene/range-
+containment truncation regressions), the key-name table, the rate-limiter
+token bucket, evidence file naming, the config parser (incl.
 `keep_running_unfocused` and `permission` defaults/round-trips),
 subscription matching, notification frame assembly, the stream throttle
-state machine (injected clock), the streaming ladder, plus widget/slot node
+state machine (injected clock), the streaming ladder, widget/slot node
 assembly, the 512-node cap, slot role classification, all three getGuiState
 response shapes, the look rotation math (hand-computed cases against the
-vanilla formula) and the permission-tier decision matrix - with no game
-launched (241 checks; a 4K incompressible-noise image verifies the 2MB RPC
-degrade, an 800x600 one the 100KB stream ladder).
+vanilla formula), the smooth-turn step/convergence math, the permission-tier
+decision matrix, the dig monitor state machine (aim -> press -> break,
+occluder tolerance + `broken_via_occluder`, telemetry early-stop, aim-stall
+guard, insta-mine short press/retries, timeout) and the dig parameter/
+result shapes - with no game launched (342 checks; a 4K incompressible-noise
+image verifies the 2MB RPC degrade, an 800x600 one the 100KB stream ladder).
 
 ## Deploy to test client
 
@@ -688,6 +791,9 @@ src/main/java/io/sirius/bridge/
     EventPusher.java      M2-B shell: notification emit choke point (chat/gui/danger/screenshot stream)
     GuiTools.java         M2-C shell: screen widget tree + container slot reads (main thread)
     LookTools.java        M2-D shells: absolute view rotation via the vanilla lookAt statement sequence
+    TurnController.java   M3.5 v1.2: tick-driven fixed-angular-speed smooth turns (one active turn, supersede-on-new-look)
+    DigContracts.java     pure: dig param validation, the DigMonitor state machine, result shapes
+    DigTools.java         M3.5 v1.2 shell: smart dig (pre-checks, smooth aim, action-layer monitored hold)
     InputGuard.java       shared guard rails: input_enabled + rate limit + evidence flag + permission tier
     ToolContracts.java    pure: param validation + response assembly + world scan logic
     InputContracts.java   pure: input param validation + result assembly + evidence naming

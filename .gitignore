@@ -36,3 +36,6 @@ HMCL-*.exe
 
 # Per-developer local notes: paths + quirks + prefs + local secrets (see docs_agent/local.template.md)
 local.md
+
+# 游戏从仓库根启动时产生的运行日志（M3.5 T0b 实录）
+/logs/

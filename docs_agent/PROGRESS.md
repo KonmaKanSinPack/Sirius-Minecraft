@@ -2,9 +2,9 @@
 
 > 本文档是**跨会话的状态锚点**：每轮工作结束时更新，新会话从这里恢复上下文。
 > 设计内容不写这里（在 [sirius-design.md](../docs_human/sirius-design.md) / [sirius-technical.md](./sirius-technical.md)），这里只记"做到哪了、接下来干什么"。
-> 最后更新：2026-08-19
+> 最后更新：2026-08-20
 
-## 当前阶段：M3（会师·最小整机）**已完成**——真机闭环验证通过（2/3 任务完整闭环，1 预算用尽）；待启动 M4（反射+寻路）
+## 当前阶段：M3.5（智能优化轮）**已完成**——运动控制从 VLM 下沉确定性代码（任务级原语 + Baritone 集成 + bridge dig 智能挖掘），真机闭环验证通过（砍树 22 步 212k → 4 步 16k）；待启动 M4（**反射层为主**，寻路已由 Baritone 集成解决）
 
 ## 已完成
 
@@ -37,12 +37,25 @@
 - [x] **PR #1 合并（2026-08-19）**：另一会话的双层文档重构经本地审查（191 测试/23 文档编码/路径残留零）后 merge 入 main（cf15a80）
 - [x] **local.md 机制（2026-08-19）**：开发者本地备忘（环境路径 + 本机坑 + 个人特殊要求，结构不限自由编辑）gitignored 各开发者独立；模板 docs_agent/local.template.md 入库；RULES §2 第 0 步强制『拿到项目先建/核对』——开工环境自检制度化（当日由 ENV.local.md 更名放宽）
 
-## 进行中
+## M3 完成记录（2026-08-19，会师·最小整机）
 
-- **M3 收尾（2026-08-19）**：三裁决落文档 + M3-A/B/C 全完成 + 真机验收；问题清单见 reports/M3-C.md（P0: token 预算紧/world.query 截断/不会组合挖方块；P1: hello_ack 未建模/command 丢字/history 未压缩）
 - [x] **M3-A**：QwenVLM 客户端完成并验收（原生 tool-calling、b64 图片、直连清代理、重试退避、用量统计、transport 可注入 fake）；AgentConfig 从 local.md env 围栏块加载；pytest 244 绿；真实冒烟 1.17s
 - [x] **M3-B**：最小大脑循环完成并验收（chat 指令入口+自回显双重过滤+急停+tool-calling 循环+finish/播报+上下文预算）；mock 双人全流程回归资产入库；pytest 263 绿
-- [x] **M3-C 真机验收**：真服务器生存模式三任务——「你好」1 步闭环、「来我这里」11 步闭环（world.query→lookAt→走→验位→finish）、「搜集云杉木」22 步预算用尽中止（方向对没走完）。**最小整机大脑闭环成立**，详见 reports/M3-C.md
+- [x] **M3-C 真机验收**：真服务器生存模式三任务——「你好」1 步闭环、「来我这里」11 步闭环（world.query→lookAt→走→验位→finish）、「搜集云杉木」22 步预算用尽中止（方向对没走完）。**最小整机大脑闭环成立**，问题清单见 reports/M3-C.md（P1: hello_ack 未建模/command 丢字/history 未压缩——P0 三项全部由 M3.5 解决）
+
+## M3.5 完成记录（2026-08-20，智能优化轮：运动控制下沉）
+
+核心论点（Numen/Mindcraft 精读共识）：LLM 只做意图层决策，执行下沉确定性代码。spec 见 session/2026-08-20.md，全轮报告 reports/M3.5-*.md。
+
+- [x] **T0b Baritone 前置验证 PASS**：1.21.1 构建 + HMCL 实例安装 + #goto 冒烟（3s 收敛至 2.0 格、位移 18.1 格）；首轮 FAIL 定位为 quickPlay 加载屏竞态（探针时序问题，非 Baritone/bridge 缺陷）→ 落地 walkTo 界面屏障
+- [x] **T1（Java 半）world.query filter + input.click hold_ms**：filter 走 registry id/#tag（零硬编码，Numen 手段）、命中最近优先 cap 32 + truncated；hold_ms 0..10000 与 count 互斥；entities 补齐 truncated；冒烟 241→291
+- [x] **T2+T4 原语模块 + mock 世界**：`agent/primitives.py`（walk_to/dig_block/collect_block，Numen 式契约话术、看门狗、协作取消≤1s）+ `mock/fakeworld.py`（FakeWorldBridge：假 Baritone/可变方块/#tag filter）；pytest 263→276
+- [x] **T3 原语接入大脑**：三工具注册（共 14 工具）+ Numen 式契约描述 + 系统提示重写（原语优先/键鼠兜底+边界契约）+ 滚动状态免费搭车 + 预算 200k→500k + 错误码→建议映射 + 界面屏障；pytest→287
+- [x] **T5a 真机原语层验收 6/6**（零 VLM）：filter 契约/walk/dig/collect(3 根 83.2s)/急停 1.49s/性能；修 3 个真机缺陷（徒手 hold 600→3500ms 递增封顶 8000、段等待 hold 完成、遮挡递增 hold）；**发现 world.query 截断排序 bug**（cap 在排序前，铁证：range=4.0 可见 3.71 格目标、range=5.5 截断后反消失）→ Python 侧防御入库；采集目标按裁决改 oak_log（出生区无云杉）
+- [x] **T6 bridge dig 智能原语 + 平滑转头 + 截断修复**：dig 动作层监视按住（startDestroyBlock/continueDestroyBlock——**事件层长按被 vanilla 焦点双门控废掉的真机发现**，M2-D look 同构先例）；lookAt turn_speed_deg_s 固定角速度（dig 瞄准 300deg/s）；filtered 扫描改"收集→排序→截断"修 bug；协议 1.1→1.2 三处同步；冒烟→342、pytest→292、真机 5/5（collect 提速 4.9 倍至 16.8s/3 根）
+- [x] **T7 掉落物拾取**：entities 载荷补 item 注册名+count；collect_block 挖后拾取（pickup 可配置、只捡挖点 4 格内匹配掉落——多人服礼仪、实体消失=已拾取、skip 防死循环）+ pickup() 方法（未注册 VLM，M4 再议）；冒烟→345、pytest→302、真机 4/4（多人服离线回落单机；死亡屏 getGuiState+坐标换算重生）
+- [x] **T5b 直驱验收达标**：问候 1.6s；砍橡木 4 步 8.0s 16k tokens（对比 M3-C 同意图 22 步 212k 预算耗尽——步数 1/5.5、token 1/13，验收线 ≤4 次/≤30k）；完整聊天循环验收待用户进世界
+- [x] **架构裁决 4 项**（见下方决策表 2026-08-20 行）：Baritone 集成、操作型功能入 bridge、拾取 VLM 可配置、本地 LM Studio VLM 可用
 
 ## M2 完成记录（2026-08-19，D 盘机收口）
 
@@ -76,6 +89,8 @@
 - **pip 大坑（2026-08-18 实录）**：Windows 注册表系统代理（127.0.0.1:9674）被 pip/urllib 自动读取，`env -u` 清环境变量没用、`--proxy ""` 也没用，而该代理 **403 清华源** → pip 一律报 "versions: none"。解法：命令前加 `NO_PROXY='*' no_proxy='*'`。curl/gradle 不走注册表代理不受影响
 - uv 0.12.5（pip --user 安装在 Store Python 用户 Scripts：`C:\Users\Administrator\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\Scripts`，**不在 PATH**，用全路径或先 export PATH）。uv 联网需代理绕行 + 清华源：`env NO_PROXY='*' UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple uv sync`（2026-08-18 曾丢失重装，从零 sync + 191 测试全绿实证此流程）
 - 系统 java 22 可直接跑 gradlew（toolchain 21 由 Gradle 自行解析，2026-08-18 实证 build + smokeTest 45 通过）
+- **sirius-bridge 构建须带 JVM 代理参数**（联网解析 NeoForge 平台/依赖），统一走 `sirius-bridge/deploy.cmd`（构建+部署一体，参数正确）；裸跑 `gradlew build` 在本机网络环境会因不走代理而失败（2026-08-20 M3.5 教训，PROGRESS 既有代理口径的重申）
+- **真机 bridge 独占 8765**：真机与离线测试同机并行时，mock/测试服务端一律绑定 `port=0` 随机空闲端口（2026-08-20 M3.5 教训，测试套件已全量迁随机端口）
 
 ## 决策记录（只记结论，论证在设计文档）
 
@@ -94,10 +109,23 @@
 | 2026-08-19 | **Bridge=哑管道**：只上报/接受信息，一切处理归 brain；API key 只配 local.md 一遍（排查确认 bridge 无 VLM 代码/无出站 HTTP，无需删码） |
 | 2026-08-19 | **反射层归 brain**（原 §8.3 规划在 bridge 轨）：Python 无 LLM 规则消费 M2-B 的 CRITICAL 危险事件；寻路同理 brain 侧 |
 | 2026-08-19 | **M3 方案定稿**：qwen3.7-plus 单模型；原生 tool-calling；结构化感知优先+按需截图；mock 双人先行、真机 LAN 收官 |
+| 2026-08-20 | **寻路 = Baritone 集成**（不自研 A*）：#goto/#stop 聊天命令驱动（客户端拦截，不达服务器），真机冒烟 3s 收敛 2.0 格；M4 寻路里程碑收窄为反射层 |
+| 2026-08-20 | **操作型功能入 bridge、对 brain 暴露接口**：dig/look 动作层先例（事件层长按被 vanilla 焦点双门控废掉，M2-D 同构）；bridge 边界由"哑管道"两层修订为"感知原语化 + 输入标准化 + 动作层操作原语"三层（sirius-technical §8.3） |
+| 2026-08-20 | **拾取行为 VLM 可配置**：collectBlock pickup 参数（默认顺路捡匹配掉落，挖通道/清地形传 false）——意图层决策留 LLM、执行下沉代码 |
+| 2026-08-20 | **VLM 可用本地 LM Studio 模型**（reasoning_effort:"none" 为本地关思考唯一有效开关，32k 上下文；部署细节见各机 local.md） |
 
 ## 遗留问题 / 待用户输入
 
 - 旧 `mindcraft-ce-develop\` 本体（E 盘已有副本的原始位置）是否删除待定
-- M4 前决策：Baritone 依赖 vs 自研寻路
+- ~~M4 前决策：Baritone 依赖 vs 自研寻路~~ **已决（2026-08-20）：Baritone 集成**；M4 范围收窄为反射层为主（Baritone 注入路径优化——#goto 聊天往返 1.3s/次——为次项）
 - M5 前决策：执行器①是否引入 Numen 式确定性任务
 - 模型选型（规划器/执行器具体型号）未定
+- 本地 VLM 观察类问题不调工具直接幻觉作答 → M4 系统提示硬约束
+- 掉落物匹配为精确 id（stone→cobblestone 不命中，需掉落表知识）→ M4 再议（当前保守不捡恰好符合多人服礼仪）
+- pickup() 原语未暴露给 VLM（真机已验证可用，注册只需 tools.py 加条目）→ M4 注册表层再议
+- 无 filter 的 world.query 仍是 v1.0 cap-before-sort 截断语义（brain 侧已防御、filter 路径已修）→ M4 观察项，根治属协议语义变更
+- input.click 事件层长按 / input.mouseMove 转头仍需窗口焦点（vanilla 门控无开关；"AI 播放"标准部署=游戏窗口保持前台，sirius-bridge/README 已记）
+- 多人服在线复验待用户开服（T7 单机 4/4，礼仪约束由代码+单测钉死）
+- T5b 完整聊天循环验收待用户进世界（直驱两任务已过）
+- hello_ack 未建模（P1 老项，功能不影响）
+- collect 16.8s/3 根的下一步提速在换斧/执行器（M5），不在本层

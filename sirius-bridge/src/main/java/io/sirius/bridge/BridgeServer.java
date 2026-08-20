@@ -124,6 +124,7 @@ public final class BridgeServer extends WebSocketServer {
         InputGuard guard = new InputGuard(config);
         InputTools.registerAll(tools, guard);
         LookTools.registerAll(tools, guard);
+        DigTools.registerAll(tools, guard); // M3.5 v1.2: intelligent dig primitive (shares the guard)
         GuiTools.registerAll(tools);
         tools.register("events.subscribe", this::subscribeEvents);
     }

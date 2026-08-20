@@ -38,7 +38,9 @@ class BridgeConfig:
     # token 握手：spec §8.2 安全模型。真 Mod 要求首条消息 hello；mock 不校验。
     # None = 不发送 hello。
     token: str | None = None
-    protocol_version: str = "1.0"
+    # 与 Mod 侧 Capabilities.PROTOCOL_VERSION 保持同步（M3.5 T6 起为 1.2：
+    # dig 原语 + lookAt turn_speed_deg_s；此前 J 轮遗留的 1.0 默认在此对齐）
+    protocol_version: str = "1.2"
     connect_timeout: float = 10.0
     request_timeout: float = 30.0
     hello_timeout: float = 2.0

@@ -18,7 +18,8 @@
   chat handler 回话，不再重复
 - **上下文管理**：消息历史按任务隔离；单条工具结果文本超 4000 字符截断（保留
   头尾）；截图图像仅保留最近 1 张（新截图到来时旧 user 消息里的 image_url 段
-  被裁掉，防上下文爆炸）
+  被裁掉，防上下文爆炸）；M3.5 滚动状态——每步 VLM 调用前替换式注入一条
+  〔当前状态〕user 消息（getStats 单行摘要，历史里恒至多一条，Numen 免费搭车做法）
 - 全程结构化日志（步号/工具/耗时/tokens），每步一条 INFO
 """
 
@@ -67,6 +68,9 @@ DEFAULT_ECHO_WINDOW = 5.0
 SELF_MATCH_TOLERANCE = 2.0
 # 保留的最近任务运行记录数
 MAX_RUN_HISTORY = 100
+# 滚动状态消息的固定前缀（替换式注入的识别标记；内容形如
+# "〔当前状态〕位置(100.5,64.0,-200.5) 生命20 饥饿20 氧气300"）
+STATUS_PREFIX = "〔当前状态〕"
 
 # 任务结束原因（TaskRun.end_reason 取值）
 END_FINISH = "finish"            # 模型调用了 finish
@@ -75,6 +79,23 @@ END_STOP = "stop"                # 急停
 END_MAX_STEPS = "max_steps"      # 步数预算用尽
 END_BUDGET = "budget"            # token 预算用尽
 END_ERROR = "error"              # VLM 调用失败等不可恢复错误
+
+
+def bridge_error_hint(code: int) -> str:
+    """BridgeError code → 追加给模型的建议动作（读文本可自救，M3.5 T3）。
+
+    语义对照 bridge 侧 Json.java 的错误码：-32602 参数不合法 / -32010 输入限频
+    （InputGuard 20/s）/ -32011 输入通道关闭 / -32012 权限分级拒绝。
+    """
+    if code == -32602:
+        return "（注意参数边界：world.query range≤64、filter 1..16 条）"
+    if code == -32010:
+        return "（输入限频（20/s），稍等再试）"
+    if code == -32011:
+        return "（输入通道已被关闭（input_enabled=false），需要玩家在 bridge 侧重新开启）"
+    if code == -32012:
+        return "（该操作超出当前权限分级被拒，换用被允许的操作）"
+    return ""
 
 
 # ---------------------------------------------------------------------- 自回显过滤
@@ -243,7 +264,11 @@ class AgentLoop:
         self.vlm = vlm
         self.config = config
         self.persona = persona
-        self.registry = registry if registry is not None else default_registry()
+        # M3.5：默认注册表带任务级原语（walkTo/digBlock/collectBlock），cancel 闭包把
+        # 循环急停态接进原语微步循环（registry.execute 签名无 loop 引用，构造期注入）；
+        # 显式传 registry 时不接（调用方自负责原语的取消绑定）
+        self.registry = registry if registry is not None else default_registry(
+            cancel=lambda: self._stop_requested)
         self.command_settle = command_settle
         # 工具 handler 与播报走的包装客户端（command 拦截 + 串行）
         self.tools_client = LoopClient(client, self)
@@ -398,6 +423,9 @@ class AgentLoop:
                 if last_call_at is not None and loop_cfg.min_interval > 0:
                     await asyncio.sleep(max(0.0, loop_cfg.min_interval
                                             - (time.monotonic() - last_call_at)))
+                # M3.5 滚动状态免费搭车（Numen runtime_state 做法）：每步调用前替换式
+                # 注入 getStats 摘要——模型白拿最新自身状态，省掉专门的观察调用
+                await self._inject_rolling_status(messages)
                 response = await asyncio.to_thread(
                     self.vlm.chat, messages, tools=self.registry.openai_tools())
                 last_call_at = time.monotonic()
@@ -506,8 +534,9 @@ class AgentLoop:
             outcome = ToolOutcome(validation_error_text(call.name, exc))
             ok = False
         except BridgeError as exc:
-            outcome = ToolOutcome(f"工具 {call.name} 被身体拒绝 "
-                                  f"[{exc.code}]：{exc.message}")
+            outcome = ToolOutcome(
+                f"工具 {call.name} 被身体拒绝 [{exc.code}]：{exc.message}"
+                f"{bridge_error_hint(exc.code)}")
             ok = False
         except TimeoutError as exc:
             outcome = ToolOutcome(f"工具 {call.name} 超时：{exc}")
@@ -532,12 +561,33 @@ class AgentLoop:
         who = self.persona.strip() or "天狼星（Sirius），一位 Minecraft 玩家的 AI 陪玩伙伴"
         return f"""你是{who}。你通过工具感知游戏世界、执行操作、与玩家交流，自主完成玩家在聊天中交给你的任务。
 
-## 工具使用
-- 观察：getStats（自身状态）、getGuiState（当前界面与容器槽位）、world.query（附近实体/方块）、screenshot（截图，画面图像附在下一条消息里）
+## 工具选用（先读这里）
+任务级原语优先——一切"移动 / 挖掘 / 采集"意图都用它们，一次调用自动完成全部寻路与
+按键，不需要你操心坐标寻路细节，更不要用 input.key 一步一步走：
+- walkTo(x,z[,y])：走到目标坐标。受理即执行、阻塞行走到位后才返回；失败时读返回
+  文本里的建议行动照做；行走超时同参数重发即可续走剩余路程
+- digBlock(x,y,z)：挖掉指定坐标的方块；目标已空算成功（幂等）；够不着时不会盲挖，
+  返回文本会建议先 walkTo 过去
+- collectBlock(block_ids,count[,pickup])：按方块 ID（支持 #tag）收集 N 个——自动"找最近→
+  走过去→挖掉"循环到收满或 64 格范围内清空；范围内挖完但不足 count 且有收获 = 成功；
+  默认挖后顺路捡起匹配的掉落物，挖通道/清理地形等不要掉落物时传 pickup=false
+键鼠原语（input.*）定位为精细操作与 GUI 交互的兜底：开背包/箱子点槽位、拖动物品等
+原语覆盖不到的场景才直接用键鼠。
+
+## 其余工具
+- 观察：getStats（自身状态）、getGuiState（当前界面与容器槽位）、world.query（附近
+  实体/方块）、screenshot（截图，画面图像附在下一条消息里）
 - 视角：lookAt（把视线转到世界坐标 x,y,z）
-- 输入：input.mouseMove（窗口像素坐标）/ input.click / input.key / input.text；注意 getGuiState 的槽位坐标是 gui-scaled，喂给 mouseMove 前需按比例换算
-- 交流：command（在游戏聊天框发文本；以 / 开头即游戏命令）
+- 交流：command（在游戏聊天框发文本；/ 开头即游戏命令；# 开头是 Baritone 客户端
+  命令——walkTo 已封装寻路，一般不需要手发 # 命令）
 - 结束：finish（任务完成时调用，result 为游戏内播报的结束语）
+
+## 工具边界契约
+- world.query：range ≤64；filter 1..16 条（registry 名或 #tag 写法），命中按与玩家
+  距离最近优先返回（最多 32 条）
+- input.* 共享限频 20/s：连续输入之间稍等，收到限频错误就等一下再发
+- input.click 的 hold_ms 用于长按交互（如按住挖方块）
+- getGuiState 的槽位坐标是 gui-scaled，喂给 input.mouseMove 前需按比例换算成窗口像素
 
 ## 安全约束
 - 禁止攻击任何玩家或实体，禁止任何攻击类操作
@@ -559,6 +609,51 @@ class AgentLoop:
             except Exception as exc:  # noqa: BLE001
                 parts.append(f"{method}: 不可用（{exc}）")
         return "\n".join(parts)
+
+    async def _inject_rolling_status(self, messages: list[dict[str, Any]]) -> None:
+        """每步 VLM 调用前注入一条〔当前状态〕user 消息（M3.5，替换式不累积）。
+
+        Numen runtime_state 的"免费搭车"做法（EntityAgentLoop）：模型每步白拿一份
+        最新自身状态，不必为"我在哪/血量如何"专门花一次 getStats 工具调用。
+        getStats 失败则跳过该步注入（上一条旧状态留在原地，不阻塞主循环）。
+        """
+        try:
+            stats = await self.client.call("getStats")
+        except Exception as exc:  # noqa: BLE001 —— 搭车功能失败不值得杀任务
+            logger.debug("滚动状态 getStats 失败，跳过注入：%s", exc)
+            return
+        summary = self._status_summary(stats)
+        if not summary:
+            return
+        # 替换式：先移除上一轮的状态消息再追加（固定前缀识别；历史里恒至多一条）
+        messages[:] = [message for message in messages
+                       if not (message.get("role") == "user"
+                               and isinstance(message.get("content"), str)
+                               and message["content"].startswith(STATUS_PREFIX))]
+        messages.append(user_message(f"{STATUS_PREFIX}{summary}"))
+
+    @staticmethod
+    def _status_summary(stats: Any) -> str:
+        """getStats → 单行状态摘要：位置 + 生命/饥饿/氧气（字段缺失自动跳过）。
+
+        朝向/主手当前 getStats 不返回（bridge getStats 契约只有位置/生命/饥饿/
+        饱和/氧气/经验/维度/模式/效果）；将来 bridge 若扩充字段，在此各加一行即可。
+        """
+        if not isinstance(stats, dict) or not stats.get("in_game"):
+            return ""
+        parts: list[str] = []
+        position = stats.get("position")
+        if isinstance(position, dict):
+            try:
+                parts.append(f"位置({float(position['x']):.1f},"
+                             f"{float(position['y']):.1f},{float(position['z']):.1f})")
+            except (KeyError, TypeError, ValueError):
+                pass
+        for key, label in (("health", "生命"), ("food", "饥饿"), ("air", "氧气")):
+            value = stats.get(key)
+            if isinstance(value, (int, float)):
+                parts.append(f"{label}{value:g}")
+        return " ".join(parts)
 
     @staticmethod
     def _assistant_message(response: VLMResponse) -> dict[str, Any]:
@@ -637,7 +732,9 @@ __all__ = [
     "MAX_TOOL_RESULT_CHARS",
     "NIL_UUID",
     "PARTIAL_DONE_PREFIX",
+    "STATUS_PREFIX",
     "STOP_REPLY_TEXT",
     "STOP_WORDS",
+    "bridge_error_hint",
     "match_self_uuid",
 ]

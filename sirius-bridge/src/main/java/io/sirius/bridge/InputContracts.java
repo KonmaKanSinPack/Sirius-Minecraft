@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -196,15 +197,26 @@ public final class InputContracts {
     public static final long CLICK_INTERVAL_MS = 50;
     public static final long CLICK_HOLD_MS = 25;
 
-    /** Validated {@code input.click} params. */
-    public record ClickParams(int button, int count) {
+    /** Upper bound for the v1.1 {@code hold_ms} (a dig-style hold tops out at 10 s). */
+    public static final int MAX_HOLD_MS = 10_000;
+
+    /**
+     * Validated {@code input.click} params. {@code holdMs} is the M3.5 v1.1
+     * extension: {@code null} = absent (v1.0 quick-tap behaviour); an explicit
+     * {@code hold_ms} turns the click into ONE held press whose RELEASE fires
+     * {@code holdMs} later - which is why {@code count} and {@code hold_ms}
+     * are mutually exclusive (a hold cannot repeat).
+     */
+    public record ClickParams(int button, int count, Integer holdMs) {
     }
 
     /**
      * Validates {@code input.click} params: {@code button} 0 (left) / 1
      * (right) / 2 (middle); {@code count} an integer 1..
      * {@link #MAX_CLICK_COUNT} (default 1; repeats fire every
-     * {@link #CLICK_INTERVAL_MS} ms).
+     * {@link #CLICK_INTERVAL_MS} ms); {@code hold_ms} an integer 0..
+     * {@link #MAX_HOLD_MS} (v1.1; exclusive with an explicitly given
+     * {@code count} - {@code -32602} when both appear).
      */
     public static ClickParams clickParams(JsonObject params) throws ToolContracts.InvalidParams {
         JsonElement buttonElement = params.get("button");
@@ -223,6 +235,7 @@ public final class InputContracts {
         }
 
         int count = 1;
+        boolean countExplicit = false;
         JsonElement countElement = params.get("count");
         if (countElement != null && !countElement.isJsonNull()) {
             if (!countElement.isJsonPrimitive() || !countElement.getAsJsonPrimitive().isNumber()) {
@@ -240,8 +253,63 @@ public final class InputContracts {
                 throw new ToolContracts.InvalidParams("input.click count must be <= " + MAX_CLICK_COUNT
                         + ", got: " + count);
             }
+            countExplicit = true;
         }
-        return new ClickParams(button, count);
+
+        Integer holdMs = null;
+        JsonElement holdElement = params.get("hold_ms");
+        if (holdElement != null && !holdElement.isJsonNull()) {
+            if (!holdElement.isJsonPrimitive() || !holdElement.getAsJsonPrimitive().isNumber()) {
+                throw new ToolContracts.InvalidParams("input.click hold_ms must be an integer 0.." + MAX_HOLD_MS);
+            }
+            double h = holdElement.getAsDouble();
+            if (h != Math.floor(h)) {
+                throw new ToolContracts.InvalidParams("input.click hold_ms must be an integer, got: " + h);
+            }
+            if (h < 0 || h > MAX_HOLD_MS) {
+                throw new ToolContracts.InvalidParams("input.click hold_ms must be within 0.." + MAX_HOLD_MS
+                        + ", got: " + (int) h);
+            }
+            holdMs = (int) h;
+            if (countExplicit) {
+                // A hold is one long press; repeating it would mean count holds
+                // queued back-to-back, which the burst scheduler cannot express
+                // (and no caller needs) - reject the ambiguity up front.
+                throw new ToolContracts.InvalidParams("input.click count and hold_ms are mutually exclusive:"
+                        + " hold_ms is a single held press (drop count), count repeats quick taps (drop hold_ms)");
+            }
+        }
+        return new ClickParams(button, count, holdMs);
+    }
+
+    // ------------------------------------------------------------------ click schedule
+
+    /** One mouse event of a click call's follow-up schedule (the PRESS itself is injected inline). */
+    public record ScheduledClick(boolean press, long delayMs) {
+    }
+
+    /**
+     * The pure timing plan of a click call's scheduled tail - kept here (not
+     * in InputTools) so the smoke test can assert the PRESS/RELEASE timing
+     * without a client. {@code holdMs == null} (v1.0): RELEASE of the first
+     * press at +{@link #CLICK_HOLD_MS}, further clicks every
+     * {@link #CLICK_INTERVAL_MS}; with {@code holdMs} (v1.1): exactly one
+     * RELEASE at +{@code holdMs} (the M2-A input.key scheduling pattern).
+     */
+    public static List<ScheduledClick> clickSchedule(ClickParams p) {
+        List<ScheduledClick> out = new ArrayList<>(p.count() * 2);
+        if (p.holdMs() != null) {
+            out.add(new ScheduledClick(false, p.holdMs()));
+            return out;
+        }
+        for (int i = 0; i < p.count(); i++) {
+            long base = i * CLICK_INTERVAL_MS;
+            if (i > 0) {
+                out.add(new ScheduledClick(true, base)); // re-press of clicks 2..n
+            }
+            out.add(new ScheduledClick(false, base + CLICK_HOLD_MS)); // release of click i
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------ results
@@ -284,14 +352,22 @@ public final class InputContracts {
         return result;
     }
 
-    /** {@code input.click} result; {@code evidence} is the saved JPEG's name+size or null. */
+    /**
+     * {@code input.click} result; {@code evidence} is the saved JPEG's name+size or null.
+     * {@code holdMs} (v1.1, null = legacy tap) additionally echoes the hold and
+     * the scheduled RELEASE, mirroring {@link #keyResult}'s contract.
+     */
     public static JsonObject clickResult(int button, int count, boolean screenOpen, String screenName,
-                                         String evidenceFile, long evidenceBytes) {
+                                         String evidenceFile, long evidenceBytes, Integer holdMs) {
         JsonObject result = new JsonObject();
         result.addProperty("clicked", true);
         result.addProperty("button", button);
         result.addProperty("count", count);
         result.addProperty("screen_open", screenOpen);
+        if (holdMs != null) {
+            result.addProperty("hold_ms", holdMs);
+            result.addProperty("release_scheduled", true);
+        }
         if (screenName != null) {
             result.addProperty("screen", screenName);
         }

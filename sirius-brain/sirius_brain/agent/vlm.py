@@ -280,6 +280,9 @@ class QwenVLM:
             # DashScope qwen3 系：根级开关思考（local.md 实测配方）
             "enable_thinking": self.config.enable_thinking,
         }
+        # OpenAI 风格思考档位：LM Studio 本地模型唯一有效的关思考开关（"none"）
+        if self.config.reasoning_effort is not None:
+            body["reasoning_effort"] = self.config.reasoning_effort
         if self.config.temperature is not None:
             body["temperature"] = self.config.temperature
         if self.config.max_tokens is not None:
