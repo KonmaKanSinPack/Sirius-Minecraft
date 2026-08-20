@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -251,12 +252,20 @@ final class PerceptionTools {
                     item = itemId != null ? itemId.toString() : "unknown";
                     itemCount = stack.getCount();
                 }
+                // M4: registry mob category (lowercase MobCategory name - a
+                // registry datum, so modded monsters classify themselves as
+                // "monster" without a hardcoded list) and collision-box width
+                // (the brain's flee reflex approximates melee reach as
+                // width/2 + 1.5). Both additive fields; protocol stays 1.2.
+                String category = entity.getType().getCategory()
+                        .name().toLowerCase(Locale.ROOT);
+                double width = entity.getDimensions(entity.getPose()).width();
                 facts.add(new ToolContracts.EntityFact(
                         entity.getStringUUID(),
                         entity.getName().getString(),
                         EntityType.getKey(entity.getType()).toString(),
                         entity.getX(), entity.getY(), entity.getZ(),
-                        health, item, itemCount));
+                        health, item, itemCount, category, width));
             }
             return ToolContracts.filterEntities(facts, player.getX(), player.getY(), player.getZ(),
                     p.range(), p.filter());

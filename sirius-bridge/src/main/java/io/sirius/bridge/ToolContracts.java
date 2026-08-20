@@ -514,15 +514,29 @@ public final class ToolContracts {
      * is client-localized ("橡木原木") and therefore useless for brain-side
      * id matching, exactly why the registry id rides along (same philosophy as
      * blocks reporting {@code minecraft:oak_log}).
+     *
+     * <p>M4 adds {@code category} ({@code EntityType.getCategory()} name,
+     * lowercase - "monster"/"creature"/"ambient"/"water_creature"/"misc", a
+     * registry datum so modded hostiles classify themselves) and {@code width}
+     * (collision-box width, the brain's flee reflex approximates melee reach
+     * as width/2 + 1.5). Both additive; null/0 for pre-M4 constructors.
      */
     public record EntityFact(String uuid, String name, String type,
                              double x, double y, double z, float health,
-                             String item, int count) {
+                             String item, int count,
+                             String category, double width) {
 
         /** Non-item entity convenience (item fields default to null/0). */
         public EntityFact(String uuid, String name, String type,
                           double x, double y, double z, float health) {
-            this(uuid, name, type, x, y, z, health, null, 0);
+            this(uuid, name, type, x, y, z, health, null, 0, null, 0.0);
+        }
+
+        /** Item entity convenience (M4 category/width default to null/0). */
+        public EntityFact(String uuid, String name, String type,
+                          double x, double y, double z, float health,
+                          String item, int count) {
+            this(uuid, name, type, x, y, z, health, item, count, null, 0.0);
         }
     }
 
@@ -578,6 +592,14 @@ public final class ToolContracts {
                 // the exact pre-T7 shape (backwards compatible, additive).
                 entity.addProperty("item", fact.item());
                 entity.addProperty("count", fact.count());
+            }
+            if (fact.category() != null) {
+                // M4 pure addition: mob-category registry datum (all entities).
+                entity.addProperty("category", fact.category());
+            }
+            if (fact.width() > 0.0) {
+                // M4 pure addition: collision-box width (flee-radius input).
+                entity.addProperty("width", fact.width());
             }
             entities.add(entity);
         }

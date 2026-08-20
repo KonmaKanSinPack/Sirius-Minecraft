@@ -4,7 +4,7 @@
 > 子项目命名：**sirius-bridge**（NeoForge 客户端 Mod，Java，眼与手）· **sirius-brain**（**Python** 后端大脑）
 > GitHub 仓库名：**Sirius-Minecraft**（避免与其他 Sirius 重名项目撞车；内部文档沿用 Sirius 称谓）
 
-> 状态：实现推进中（实时更新） · 最后更新：2026-08-20（M3.5 智能优化轮收尾）
+> 状态：实现推进中（实时更新） · 最后更新：2026-08-20（M4 反射层收尾）
 > 设计理念与动机见姐妹篇：[sirius-design.md](../docs_human/sirius-design.md)（人读的纯思路版本）
 > 本文档面向实现：代码落点、接口定义、数据结构、参数与边界条件。
 
@@ -358,7 +358,8 @@ world.query({ type: "blocks"|"entities", range, filter? })
       // filter（v1.1）：1..16 条 registry id（短名自动补 minecraft:）或 #tag（展开 tag 成员）；
       // blocks 命中按与玩家距离升序返回 cap 32 + truncated；entities 按实体 type 过滤（拒 #tag）
       // entities 载荷（v1.2）：minecraft:item 实体条目带 item（ItemStack 注册名）与 count——注册名可匹配，
-      // name 是客户端本地化中文名不可用于匹配
+      // name 是客户端本地化中文名不可用于匹配。M4 起条目另带 category（MobCategory 小写注册表名，
+      // monster=敌对——模组怪自动归队）与 width（碰撞箱宽，flee 危险半径输入）——纯增响应字段，不 bump
 getStats()
 
 // 动作层操作原语（v1.2；无可靠事件路径时的执行原语，见 §8.3 分工三层）
@@ -388,8 +389,9 @@ events.watch({ stat, condition, hysteresis, cooldown_ms })
 | 1.0 | M0 冻结 | 基础感知/输入/事件/任务帧（27 个 schema） |
 | 1.1 | M3.5 T1 | world.query 加 `filter`；input.click 加 `hold_ms`；entities 结果补 `truncated` |
 | 1.2 | M3.5 T6/T7 | 新工具 `dig`；lookAt 加 `turn_speed_deg_s`；entities item 载荷加 `item`/`count`（纯增响应字段，协议层面无需 bump 的边界情况，随 T6 一并升版） |
+| —（不 bump） | M3.6 / M4 | M3.6：dig 响应加 `drops`（经验掉落报告）；M4：entities 载荷纯增 `category`/`width`——均同 v1.2 item/count 的纯增边界情况，版本维持 1.2 |
 
-**brain 侧 VLM 工具表（14 项，M3.5；`sirius-brain/sirius_brain/agent/tools.py` default_registry）**：9 个 bridge 工具直通（getStats/getGuiState/world.query/screenshot/lookAt/input.*×4，参数 schema 读冻结产物）+ 3 个任务级原语（walkTo/digBlock/collectBlock——handler 包装 `agent/primitives.py`，描述写 Numen 式契约：受理即执行/失败读建议/同参数重发续做）+ command + finish（agent 层定义）。walkTo/collectBlock 是 brain 组合原语（Baritone #goto 走 command 聊天通道），不是 bridge 工具。
+**brain 侧 VLM 工具表（15 项，M3.5 定 14 + M3.6 pickup；`sirius-brain/sirius_brain/agent/tools.py` default_registry）**：9 个 bridge 工具直通（getStats/getGuiState/world.query/screenshot/lookAt/input.*×4，参数 schema 读冻结产物）+ 4 个任务级原语（walkTo/digBlock/collectBlock——handler 包装 `agent/primitives.py`，描述写 Numen 式契约：受理即执行/失败读建议/同参数重发续做；pickup——M3.6 注册，Numen collect_items 语义+多人服礼仪话术）+ command + finish（agent 层定义）。walkTo/collectBlock/pickup 是 brain 组合原语（Baritone #goto 走 command 聊天通道），不是 bridge 工具。
 
 **事件分级**：CRITICAL（溺水/着火/被攻击/死亡/断线→反射层立即或 L1 中断）、WARNING（饥饿/GUI变化→排队）、INFO（聊天/天气→缓冲）。
 
@@ -420,10 +422,28 @@ events.watch({ stat, condition, hysteresis, cooldown_ms })
 2. **输入标准化**：一切注入走可校验的 schema 化原语（input.*）与聊天通道（command）；
 3. **动作层操作原语**：无可靠事件路径的连续操作（事件层长按被 vanilla 焦点双门控废掉、视角控制）允许 Mod 提供操作型工具——M2-D `look` 开先例、M3.5 `dig` 确立为模式（真机证据链见 reports/M3.5-T6.md §二.1）——对 brain 暴露意图级接口（"挖这个方块"→结果判定），不暴露按键细节；**任务级语义组合仍在 brain**（walkTo/collectBlock 是 brain 原语，Baritone 经 command 通道驱动，Mod 无任务概念）。
 
-### 8.3 反射层与寻路（brain 侧，设计借鉴 Numen；归属 2026-08-19 裁决、寻路 2026-08-20 裁决）
+### 8.3 反射层与寻路（brain 侧，设计借鉴 Numen；归属 2026-08-19 裁决、寻路 2026-08-20 裁决、反射层 M4 落地 2026-08-20）
 
 - **归属裁决（2026-08-19）**：Bridge 按分工三层提供原语（见 §8.2 分工原则），任务语义与处理归 brain——反射层实现为 **brain 侧无 LLM 规则模块**，消费 Bridge 上报的 CRITICAL 危险事件（drown/fire/health_low/death，M2-B 已实现），回灌 input.* 指令；localhost WS 往返延迟对本能响应足够（MLG 级毫秒精度需求届时再议，可设计"预武装模式"由 brain 预授指令模板）
-- **本能链：序数固定分层（2026-08-19 依据 Numen 现行代码修正；原"每 tick 数值竞价出价制"是 Numen 旧设计，其现行 TaskSelector 已退役浮点竞价）**：按注册序自上而下问 `canRun()`，首个可运行者独占身体；层级固定（反射 → 同步槽 → 当前任务 → 空闲姿态），每层至多一个候选，无比较可言——可预测性优先于"最优性"（Numen TaskSelector.java:21-67 的裁决理由）。分层参照：MLG > 换气 > 怪物防御 > 脱困（序数 10/20/30/50 仅表顺序）。**中断=边沿触发**（胜者变化的那一 tick 才 `stop(PREEMPTED)`，不是每 tick 重发）；**抢占≠结算**（任务保留状态，截止时间在抢占期每 tick 冻结 +1，任务恢复后仍恰好产出一次结果）；任务可钉住（pin）特定反射，身体空闲时自动释放
+- **本能链（M4 落地版，2026-08-20；实现 `sirius-brain/sirius_brain/agent/reflexes.py` ~900 行 + loop.py 接线）**：核心主张**脊髓不过大脑**——保命动作在确定性代码里完成、零 VLM token，认知层只收事后简报。调度裁决沿用序数固定分层的原始论证（2026-08-19 依据 Numen 现行代码修正，弃每 tick 数值竞价）：按注册序自上而下问 `can_run()`，**首个 True 胜出并 break**（层内单候选，结构性消灭比较——可预测性优先于"最优性"，Numen TaskSelector.java:21-67 的裁决理由）。落地形态：
+  - **等级框架**：`ReflexLevel` 三级**严格单调能力束**（OBSERVER L0 观察 ⊂ SELF_PRESERVE L1 自保·默认 ⊂ GUARD L2 自卫·预留枚举位）——不做每条反射的开关（Numen 删空闸教训）；L2 客户端战斗模块后置独立轮次，接入需同步修订 loop 的"禁止攻击"安全约束。切换=聊天命令"反射等级 观察/自保"（`match_reflex_level_command` 在 `_on_chat` 识别即切换+播报），**人类-only**——不进 VLM 工具表，VLM 无权升攻击等级；只改内存不持久化（重启回 `LoopConfig.reflex_level` 默认）。`instincts_section(level)` 按等级生成系统提示 `<本能>` 节——**等级是代码层与认知层唯一同步点**。等级门控在调度循环（`chain.level.value > self.level.value` 跳过），danger 事件 handler 不门控——**L0 关动作不关感知**（〔危险〕行照进认知）
+  - **调度器 `ReflexScheduler`**（Numen CompanionBrain 的 asyncio 移植）：0.5s 轮询协程（`poll_interval` 可配，测试 0.05s），每轮 `sample_body()` → 按注册序单候选执行 → 睡轮询间隔；`busy` 标志是 AgentLoop 的任务门（反射 act 期间不开新任务——先归位再做事）；单条反射/采样异常不杀调度器
+  - **三档打断**（`InterruptKind = Literal["none","cooperative","preempt"]`）：`none`=旁路（不碰任务不碰按键，如 speaking_look 转头看人）；`cooperative`=短暂接管按键后归还、任务不停（换气/脱困——真客户端多输入天然共存）；`preempt`=经 `AgentLoop.request_preempt(reason)` 掀翻当前任务（撤离/逃离/低血/死亡）——end_reason 记 `preempt`、不播报（反射路径自己上报），与玩家急停的回话完全分流
+  - **BodyState 信号源（实事求是版）**：getStats 轮询 2Hz（position/health/air/in_game/alive——schema v1.2 实测无 on_fire/眼位水/yaw）；眼在水中=air<300 时才花一次 `world.query(blocks, filter=water, range=3)` 查眼位方块（truncated 保守为 True——M3.5 T5a 截断在排序前的教训）；on_fire/dead/health_low=CRITICAL 事件置位（M2-B danger 采样器，边沿+5s 冷却；dead 另有 alive=False 轮询兜底与复活 5s 宽限重臂闩）；threat/companion=entities 低频采样（每 2 轮 1Hz）：`category=="monster"` 且进入危险半径（`width/2 + 1.5`，Numen Menace 简化——不查 attribute/攻击距离，远程怪偏保守、低血反射兜底）；movement_active=AgentLoop 在 walkTo/collectBlock 执行期置位（脱困的"有输入"信号）。事件订阅**一次带全类型** `["chat","death","fire","health_low","drown"]` 且不带 min_level——bridge 订阅是单槽替换语义，CRITICAL 过滤会把 INFO 的 chat 滤掉
+  - **L1 七条反射**（注册序即优先级；触发阈值全部来自精读实测值）：
+
+    | # | 反射（id） | 触发 | 动作 | 打断 |
+    |---|---|---|---|---|
+    | 1 | 死亡 death | CRITICAL death / alive=False（reported 闩，复活过宽限自动重臂） | preempt + 聊天报死亡坐标 + 〔紧急〕注入，等玩家指令**不自动重生** | preempt |
+    | 2 | 低血 health_low | CRITICAL health_low（8s 本地冷却） | preempt + #stop + 聊天警报 + 〔紧急〕注入 | preempt |
+    | 3 | 撤离 fire | CRITICAL fire 置位（act 开头清位，再触发靠新事件边沿） | preempt + #stop + 20 格找水优先，否则反向撤 5 格（反向=近 3s 运动速度反方向，无近期运动取 +X——getStats 读不到火源方向） | preempt |
+    | 4 | 逃离 flee | 12 格内 monster 进入危险半径（6s 冷却） | preempt + #stop + 反向走 8 格（walk_briefly 超时即收，绝不恋战）+ 简报，**不还击** | preempt |
+    | 5 | 换气 breath | 眼在水中且 air≤240/300（dead 门控） | 循环按住 SPACE（400ms/次）上浮，air=300 即收；10s 封顶仍浮不上→聊天求助 | cooperative |
+    | 6 | 脱困 unstuck | 2s 窗有移动输入但位移<0.75 格（6s 冷却） | 3 段 137° 扇形 lookAt+burst（W 600ms+SPACE 300ms 周期跳）；任务不停。扇形基准取 0°（getStats 无 yaw，爆发是探索性的） | cooperative |
+    | 7 | 注视 speaking_look | 播报窗口 2.5s 内且 16 格内有其他玩家（1.2s 最小间隔） | lookAt 对方头部（平滑转头由 bridge turn_speed 兜底；不写简报——常态不是事件） | none |
+
+  - **事后知会（非记忆）**：反射 act **结束才写** `behavior_log`（先归位再宣布；act 中途死亡/被取消则该行不写——设计非 bug）；AgentLoop 每轮 VLM 调用前 `_inject_reflex_notices` **替换式**注入一条〔本能反应〕消息（尾部 500 字符，历史里恒一条）；death/低血走 `inject_urgent` 排队、下次调用前/任务开头 drain 成〔紧急〕（排队而非直插活动 messages——vlm.chat 在工作线程遍历 messages，并发 append 有竞态；任务死了自动留给下一任务）。无持久化、无证据、无检索——纯消息；behavior_log（deque）是 M6+ 危险记忆的天然挂点
+  - **与 Numen 原设计的落地差异**（诚实清单）：任务不可 pin 反射；抢占无"截止时间冻结+恰好一次结算"（brain 任务是 VLM 工具循环、无截止时间簿记——重派=重算的既有裁决天然涵盖）；边沿自持改为每条反射内部管理触发窗/冷却/一次性闩，**轮询为主、CRITICAL 事件只作加速器/置位**（原设计的"胜者变化那一 tick 才 stop"边沿中断未单列——preempt 本身就是一次性动作）；反射短途行走用 `walk_briefly`（#goto+轮询到位+超时即收），不走 Primitives 的长超时/看门狗契约（撤退不恋战）
 - **寻路（2026-08-20 裁决：Baritone 集成，撤销自研 A* 计划）**：客户端装 Baritone Mod（1.21.1 / NeoForge 构建真机验证通过），brain 经 command 聊天通道发 `#goto x [y] z` / `#stop` 驱动（`#` 前缀被 Baritone 客户端拦截，不达服务器——对服务器零可见）。`sirius_brain/agent/primitives.py` 的 `walk_to` 封装：15s 无进展看门狗只重发一次、发令前界面屏障（quickPlay 加载屏竞态教训）、协作取消≤1s（取消/超时发 #stop 并报当前坐标）。原"brain 侧 A* + world.query 数据 + input.key 驱动"路线**不再实施**；M4 寻路内容收窄为 Baritone 注入路径优化（#goto 每次聊天往返 ~1.3s，collect 提速的下一个空间）。原"API 依赖 vs 完全自主"的顾虑不成立——集成面只有聊天命令，无代码级依赖
 - 异步任务受理即回执 `{task_id, async:true}`，`task_finished/task_timeout` 事件；**替换式受理**（派新活顶掉旧活，旧任务恰好结算一次；唯一拒绝例：同 tick 内刚受理的任务——防模型一轮内双重派单）；**重派=重算**（无恢复簿记，进度已在背包里）；超时报告带进度与"推进中→重派同目标 vs 停滞→改主意"裁决信息。**M3.5 现状注记**：已落地的 walkTo/digBlock/collectBlock 走"同步阻塞 + 协作式取消"（AgentLoop 串行执行工具，60s 行走占 1 个 tool call 位、期间零 VLM 调用；cancel 微步轮询≤1s），M5 分层时再升级异步受理（task/task_finished 协议帧已备好）
 
@@ -514,8 +534,8 @@ sirius-brain（大脑轨，Python）：M0 协议冻结（对 mock body 开发）
 | **M1 眼睛** | screenshot/getStats/world.query + localhost/token | Python 客户端连上并截图存盘，整合包客户端画面正确（含 Mod 内容） | S |
 | **M2 手** | input.* 四原语 + 事件订阅推送 | **纯脚本重放**"按 E 开背包→拖木头→合成工作台"——证明项目可行性 | M |
 | **M3 会师：最小整机** ⭐ | 大脑最简版（**单模型，先不分层**）结构化感知+按需截图→VLM（tool-calling）→工具（NEKO 兼容层已取消，2026-08-19 裁决） | 玩家在游戏聊天打字（如"把石头扔给我"），bot 听到并自主完成，全程闭环 | M |
-| **M3.5 智能优化** ⭐（2026-08-20 完成） | 运动控制从 VLM 下沉确定性代码：brain 任务级原语 walkTo/digBlock/collectBlock + Baritone 集成（#goto/#stop）+ bridge dig 智能挖掘（动作层监视按住）/lookAt 平滑转头/world.query filter/input.click hold_ms/entities item 载荷 + 提示契约层（分层引导+滚动状态+预算 500k）；协议 1.0→1.2；VLM 工具表 11→14 | 砍树 22 步 212k 预算耗尽 → 4 步 16k tokens（T5b 直驱）；急停原语中 ≤1s；pytest 263→302 + smoke 241→345 + 真机多项 PASS | S/M |
-| **M4 反射层**（原"反射+寻路"；寻路已由 M3.5 Baritone 集成解决，2026-08-20 收窄） | brain 侧本能链（序数分层，消费 CRITICAL 事件）；次项：Baritone 注入路径优化（#goto 聊天往返 ~1.3s/次）、系统提示硬约束（本地 VLM 观察类问题不调工具直接幻觉作答） | 被围攻能脱战；"跟我来"能穿越 200 格（Baritone 已实证中短距，200 格属验收扩展） | M |
+| **M3.5 智能优化** ⭐（2026-08-20 完成） | 运动控制从 VLM 下沉确定性代码：brain 任务级原语 walkTo/digBlock/collectBlock + Baritone 集成（#goto/#stop）+ bridge dig 智能挖掘（动作层监视按住）/lookAt 平滑转头/world.query filter/input.click hold_ms/entities item 载荷 + 提示契约层（分层引导+滚动状态+预算 500k）；协议 1.0→1.2；VLM 工具表 11→14 | 砍树 22 步 212k 预算耗尽 → 4 步 16k tokens（T5b 直驱）；急停原语中 ≤1s；pytest 263→302 + smoke 241→345 + 真机多项 PASS。**+M3.6 小补丁轮（同日）**：观察纪律防幻觉直答/hello_ack 建模/dig 经验掉落 drops+pickup 工具（表→15）；pytest 311 + smoke 350 | S/M |
+| **M4 反射层** ⭐（2026-08-20 完成） | brain 侧反射层落地（`agent/reflexes.py`）：ReflexLevel 等级框架（L0/L1/L2 预留，严格单调能力束，人类-only 聊天切换，instincts 同步点）+ ReflexScheduler（0.5s 轮询/注册序单候选/三档打断 none-cooperative-preempt/边沿自持/先归位再宣布）+ L1 七反射（换气/脱困/撤离/低血/死亡/危怪逃离/说话注视）+ 事后知会（〔本能反应〕flush + 〔紧急〕urgent）；bridge entities 载荷纯增 category/width（协议不动 1.2）。次项 Baritone 注入路径优化未动（系统提示硬约束已由 M3.6 提前销项）；记忆/认知接口按范围红线后置 | 真机零 VLM token：换气（air 217 触发回满）/死亡×3（报坐标+不自动重生）/低血/逃离（末影人 0.47 格→反向 8 格未还击）/等级切换（L0↔L1+L2 拒绝；L0 关动作不关感知）/Baritone 200 格（199 格 77s 终点差 1.2 格零误触发）全部 PASS；着火/脱困环境受限未真机（单测覆盖）；pytest 311→339 + smoke 350→353 | M |
 | **M5 分层大脑** | 规划器/执行器分家、任务卡、TaskManager（替换式受理）、双 history；移植 Mindcraft CE 命令/对话 | 挖矿时连续聊天不阻塞；"搞一组铁装备"能分解执行 | M |
 | **M6 记忆 L1/L2+玩家记忆** | 活跃层得分、LanceDB、证据数学全套 | 跨会话记得玩家愿望；被纠正的错误不再犯 | M |
 | **M7 L3 知识库** | 数据包导入、触发式检索、置信度演化、图像记忆 | 新 Mod 玩 3 小时后能答"紫色方块怎么用"，答案可溯源 | M/L |

@@ -707,6 +707,26 @@ public final class SmokeMain {
                         List.of("minecraft:item")).get("count").getAsInt() == 1,
                 "contracts: entities type filter picks the item entity by type id");
 
+        // --- filterEntities: M4 additive category + width fields
+        List<ToolContracts.EntityFact> mobFacts = List.of(
+                new ToolContracts.EntityFact("m-1", "Zombie", "minecraft:zombie",
+                        2, 64, 1, 20f, null, 0, "monster", 0.6),
+                new ToolContracts.EntityFact("m-2", "Cow", "minecraft:cow",
+                        3, 64, 1, 10f, null, 0, "creature", 0.9),
+                new ToolContracts.EntityFact("m-3", "Old", "minecraft:zombie",
+                        1, 64, 1, 20f));
+        JsonObject mobs = ToolContracts.filterEntities(mobFacts, 0, 64, 0, 8, null);
+        JsonObject zombie = mobs.get("entities").getAsJsonArray().get(0).getAsJsonObject();
+        check(zombie.has("category") && "monster".equals(zombie.get("category").getAsString())
+                        && zombie.has("width") && Math.abs(zombie.get("width").getAsDouble() - 0.6) < 1e-9,
+                "contracts: entity entry carries registry mob category + collision width (M4)");
+        JsonObject cow = mobs.get("entities").getAsJsonArray().get(1).getAsJsonObject();
+        check("creature".equals(cow.get("category").getAsString()),
+                "contracts: passive mobs report their own category");
+        JsonObject oldShape = mobs.get("entities").getAsJsonArray().get(2).getAsJsonObject();
+        check(!oldShape.has("category") && !oldShape.has("width"),
+                "contracts: pre-M4 constructors keep the old entry shape (additive only)");
+
         List<ToolContracts.EntityFact> crowd = new ArrayList<>();
         for (int i = 0; i < 200; i++) {
             crowd.add(new ToolContracts.EntityFact("u" + i, "E" + i, "minecraft:zombie", i % 4, 64, 0, 1f));

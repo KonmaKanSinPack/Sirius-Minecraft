@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import math
 from typing import Any
 
@@ -125,6 +126,12 @@ class FakeWorldBridge(MockBridgeServer):
         #: 掉落物实体表（T7）：uuid → world.query entities 条目形态的 dict
         #: （uuid/name/type=minecraft:item/item/count/position；测试可直接增删改写）
         self.item_drops: dict[str, dict[str, Any]] = {}
+        #: 非掉落物实体表（M4 危险模拟）：uuid → entities 条目形态的 dict，
+        #: 额外带 category（monster/creature/misc...）与 width（碰撞箱宽）——
+        #: 对齐 M4 后真 bridge 的 entities 载荷（flee 的敌对判定/危险半径输入）
+        self.mob_entities: dict[str, dict[str, Any]] = {}
+        #: getStats 字段覆盖（M4 危险模拟）：health/air/food/alive 等可直接注入
+        self.stats_override: dict[str, Any] = {}
         #: _spawn_drop 生成的掉落是否带 no_absorb 标记（测试开关："走到身上也
         #: 不吸附、只能被外部移除"的场景——skip 防死循环 / 第三方捡走测试）
         self.drop_no_absorb = False
@@ -138,6 +145,7 @@ class FakeWorldBridge(MockBridgeServer):
         self.looks: list[tuple[float, float, float]] = []
         self.clicks: list[dict[str, Any]] = []
         self.digs: list[dict[str, Any]] = []    # T6：dig 工具调用的 wire 记录
+        self.key_presses: list[dict[str, Any]] = []  # M4：input.key 的 wire 记录
         # 聊天框状态机（BridgeClient.command 的 T→text→ENTER 三连）
         self._chat_open = False
         self._pending_text: str | None = None
@@ -165,9 +173,14 @@ class FakeWorldBridge(MockBridgeServer):
     # ------------------------------------------------------------------ 感知
 
     def _result_get_stats(self) -> dict[str, Any]:
-        """getStats：结构对照 two_player_scene.json（位置换成活的）。"""
+        """getStats：结构对照 two_player_scene.json（位置换成活的）。
+
+        M4 危险模拟：stats_override 直接覆盖输出字段（health/air/alive 等），
+        眼位水检测靠 blocks 表里放 minecraft:water（真实语义——getStats 没有
+        水/火字段，反射层本来就用 world.query 眼位方块判水）。
+        """
         self._absorb_items()  # 轮询点 = 吸附时机（原语行走中轮询 getStats）
-        return {
+        result = {
             "in_game": True,
             "health": 20.0,
             "food": 20,
@@ -181,6 +194,8 @@ class FakeWorldBridge(MockBridgeServer):
             "effects": [],
             "alive": True,
         }
+        result.update(self.stats_override)
+        return result
 
     def _result_world_query(self, params: dict[str, Any]) -> dict[str, Any]:
         self._absorb_items()  # 轮询点 = 吸附时机（掉落物查询/方块复核前先结算物理）
@@ -207,12 +222,13 @@ class FakeWorldBridge(MockBridgeServer):
         return {"blocks": top, "count": len(top), "truncated": truncated}
 
     def _result_world_query_entities(self, params: dict[str, Any]) -> dict[str, Any]:
-        """world.query(entities)：T7 掉落物实体表 → 与 Java filterEntities 同口径。
+        """world.query(entities)：掉落物 + mob 实体表 → 与 Java filterEntities 同口径。
 
-        假世界只有 item 实体（players/zombies 不模拟）；filter 按实体 type registry
-        名匹配（短名自动补 minecraft: 前缀，与 Java 侧归一化一致）；range 为与玩家
-        的平方 3D 距离判定；cap 128 + truncated。item 实体条目带 item 注册名与
-        count（T7 bridge 契约），其余实体（本假世界没有）不带。
+        掉落物条目带 item 注册名与 count（T7 bridge 契约）；M4 起两类实体都带
+        category/width（掉落物按真 bridge 语义报 misc/0.25，mob_entities 里的
+        注入值原样透传——flee 的敌对判定/危险半径输入）。filter 按实体 type
+        registry 名匹配（短名自动补 minecraft: 前缀）；range 为与玩家的平方 3D
+        距离判定；cap 128 + truncated。
         """
         range_ = float(params.get("range", 16))
         raw_filters = params.get("filter") or []
@@ -221,7 +237,9 @@ class FakeWorldBridge(MockBridgeServer):
         max_dist_sq = range_ * range_
         out: list[dict[str, Any]] = []
         truncated = False
-        for drop in self.item_drops.values():
+        all_entities = itertools.chain(self.item_drops.values(),
+                                       self.mob_entities.values())
+        for drop in all_entities:
             if wanted_types is not None and drop["type"] not in wanted_types:
                 continue
             pos = drop["position"]
@@ -236,6 +254,10 @@ class FakeWorldBridge(MockBridgeServer):
             if drop.get("item") is not None:  # item 实体专属字段（T7）
                 entry["item"] = drop["item"]
                 entry["count"] = int(drop.get("count", 1))
+            # M4 注册表类别 + 碰撞箱宽：真 bridge 对一切实体输出；fake 里
+            # 掉落物按真语义固定 misc/0.25，mob_entities 的注入值原样透传
+            entry["category"] = str(drop.get("category") or "misc")
+            entry["width"] = float(drop.get("width", 0.25))
             out.append(entry)
         return {"entities": out, "count": len(out), "truncated": truncated}
 
@@ -379,6 +401,8 @@ class FakeWorldBridge(MockBridgeServer):
 
     def _result_key(self, params: dict[str, Any]) -> dict[str, Any]:
         code = int(params.get("code", -1))
+        self.key_presses.append({"code": code,
+                                 "duration_ms": int(params.get("duration_ms", 0))})
         if code == GLFW_KEY_T:
             self._chat_open = True
         elif code == GLFW_KEY_ENTER:

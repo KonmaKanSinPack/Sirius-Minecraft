@@ -21,6 +21,12 @@
   被裁掉，防上下文爆炸）；M3.5 滚动状态——每步 VLM 调用前替换式注入一条
   〔当前状态〕user 消息（getStats 单行摘要，历史里恒至多一条，Numen 免费搭车做法）
 - 全程结构化日志（步号/工具/耗时/tokens），每步一条 INFO
+- **M4 反射层**：``scheduler``（ReflexScheduler）随 run() 并行启动——0.5s 轮询
+  七条脊髓反射（换气/脱困/撤离/低血/死亡/危怪逃离/注视），preempt 档经
+  ``request_preempt(reason)`` 掀翻当前任务（end_reason=preempt，不播报）；
+  反射简报/危险感知在每轮 VLM 调用前以〔本能反应〕消息注入，death/低血经
+  ``inject_urgent`` 排队成〔紧急〕消息；聊天命令"反射等级 观察/自保"人类-only
+  切换等级（instincts 系统提示节随任务重新生成）；等级切换只改内存不落盘
 """
 
 from __future__ import annotations
@@ -39,8 +45,18 @@ from sirius_brain.bridge.client import BridgeClient, BridgeError
 from sirius_brain.protocol import NotificationFrame
 
 from .config import AgentConfig
+from .reflexes import (
+    LEVEL_LABELS,
+    ReflexLevel,
+    ReflexScheduler,
+    instincts_section,
+    match_reflex_level_command,
+    parse_reflex_level,
+)
 from .tools import (
     FINISH_TOOL,
+    COLLECT_BLOCK_TOOL,
+    WALK_TO_TOOL,
     UnknownToolError,
     ToolOutcome,
     ToolRegistry,
@@ -71,11 +87,18 @@ MAX_RUN_HISTORY = 100
 # 滚动状态消息的固定前缀（替换式注入的识别标记；内容形如
 # "〔当前状态〕位置(100.5,64.0,-200.5) 生命20 饥饿20 氧气300"）
 STATUS_PREFIX = "〔当前状态〕"
+# 反射事后知会消息的固定前缀（M4，替换式注入，内容为 behavior_log 尾部）
+REFLEX_NOTICE_PREFIX = "〔本能反应〕"
+# 紧急消息前缀（death/低血经 urgent 通道注入，drain 点在每轮 VLM 调用前）
+URGENT_PREFIX = "〔紧急〕"
+# 反射知会 flush 的尾部上限（字符）——纯简报不是记忆，只保最近
+REFLEX_NOTICE_TAIL_CHARS = 500
 
 # 任务结束原因（TaskRun.end_reason 取值）
 END_FINISH = "finish"            # 模型调用了 finish
 END_CONTENT = "content"          # 模型直接给纯文本回复（等价 finish）
 END_STOP = "stop"                # 急停
+END_PREEMPT = "preempt"          # M4：被反射抢占（fire/flee/health_low/death）
 END_MAX_STEPS = "max_steps"      # 步数预算用尽
 END_BUDGET = "budget"            # token 预算用尽
 END_ERROR = "error"              # VLM 调用失败等不可恢复错误
@@ -214,8 +237,9 @@ class LoopClient:
     """工具 handler / 播报路径上的 bridge 客户端包装。
 
     - ``command()``：发送前把文本登记进自回显抑制窗（自己的话回来不再当指令）；
-      全部 command 调用经循环级锁串行（急停回话 / finish 播报 / command 工具
-      不并发交错 T→text→ENTER 序列）
+      全部 command 调用经循环级锁串行（急停回话 / finish 播报 / command 工具 /
+      M4 反射的 #stop、#goto 不并发交错 T→text→ENTER 序列）；**发出一条聊天
+      （非 / # 开头）后打开注视窗口**——speaking_look 反射据此转头看主人
     - 其余属性/方法原样委托给真实 BridgeClient（call/subscribe_events/...）
     """
 
@@ -228,8 +252,11 @@ class LoopClient:
         async with self._loop._command_lock:
             self._loop.echo.register(text)
             effective_settle = self._loop.command_settle if settle is None else settle
-            return await self._client.command(text, settle=effective_settle,
-                                              timeout=timeout)
+            result = await self._client.command(text, settle=effective_settle,
+                                                timeout=timeout)
+        if not text.startswith(("/", "#")):
+            self._loop.scheduler.note_speaking()
+        return result
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
@@ -284,10 +311,29 @@ class AgentLoop:
         self._enqueue_seq = 0
         self._stop_seq = 0            # 每次"停下"自增；早于它的排队任务被丢弃
         self._stop_requested = False
+        self._preempt_reason: str | None = None  # M4：非空 = 反射抢占（非玩家急停）
         self._running = False
         self._command_lock = asyncio.Lock()
         self._background: set[asyncio.Task] = set()
         self._chat_unregister: Callable[[], None] | None = None
+        self._reflex_unregisters: list[Callable[[], None]] = []
+        # M4 紧急消息（death/低血）：排队到下一次 VLM 调用前 drain——不直接改
+        # 活动任务的 messages（vlm.chat 在线程里遍历它，并发 append 会竞态）
+        self._urgent_pending: list[str] = []
+
+        # M4 反射层：调度器挂在 loop 上（preempt 经 request_preempt 扩展急停
+        # 语义；urgent 经 inject_urgent 排队；等级来自 LoopConfig，切换命令只改
+        # 内存——重启回默认，不做持久化）
+        self.scheduler = ReflexScheduler(
+            self.tools_client,
+            level=parse_reflex_level(config.loop.reflex_level),
+            poll_interval=config.loop.reflex_poll_interval,
+            preempt=self.request_preempt,
+            urgent=self.inject_urgent,
+            self_uuid=lambda: self.self_uuid,
+            broadcast=self._broadcast,
+        )
+        self.scheduler.install_default_chains()
 
         if log_level is not None:
             logging.getLogger("sirius_brain.agent").setLevel(log_level)
@@ -295,9 +341,14 @@ class AgentLoop:
     # ------------------------------------------------------------------ 事件装配
 
     def install(self) -> None:
-        """注册 chat 事件 handler（重复调用幂等）。建议在 client.connect() 之前。"""
+        """注册 chat + CRITICAL danger 事件 handler（重复调用幂等）。建议在 connect() 之前。"""
         if self._chat_unregister is None:
             self._chat_unregister = self.client.add_event_handler("chat", self._on_chat)
+        if not self._reflex_unregisters:
+            for event in ReflexScheduler.DANGER_EVENTS:
+                self._reflex_unregisters.append(
+                    self.client.add_event_handler(
+                        event, self.scheduler.danger_handler(event)))
 
     def _on_chat(self, frame: NotificationFrame) -> None:
         """chat 事件入口（在 bridge 接收循环里同步调用；只做过滤+入队/置标志）。"""
@@ -313,6 +364,13 @@ class AgentLoop:
         if self.echo.is_echo(message, sender, self.self_uuid):
             logger.debug("忽略自身回显：%r", message)
             return
+        # M4 反射等级切换（人类-only，绝不进 VLM 工具表）：识别即切换 + 播报确认
+        target_level = match_reflex_level_command(message)
+        if target_level is not None:
+            logger.info("收到反射等级切换指令（sender=%s）：%s → %s",
+                        sender, self.scheduler.level.value, target_level.value)
+            self._spawn(self._apply_reflex_level(target_level))
+            return
         normalized = message.lower()
         if message in STOP_WORDS or normalized in STOP_WORDS:
             logger.info("收到急停指令（sender=%s）", sender)
@@ -322,6 +380,22 @@ class AgentLoop:
         self._enqueue_seq += 1
         self._queue.put_nowait((message, self._enqueue_seq))
         logger.info("新任务入队 #%d（sender=%s）：%r", self._enqueue_seq, sender, message)
+
+    async def _apply_reflex_level(self, level: ReflexLevel) -> None:
+        """反射等级切换：改内存 + 播报确认（instincts 从下个任务起生效；不持久化）。"""
+        if level is ReflexLevel.GUARD:
+            await self._broadcast(
+                f"自卫等级（L2）还是预留位，没有实现——当前仍是 "
+                f"{LEVEL_LABELS[self.scheduler.level]}，反射等级维持不变")
+            return
+        old = self.scheduler.level
+        if level is old:
+            await self._broadcast(f"反射等级已经是 {LEVEL_LABELS[level]} 了")
+            return
+        self.scheduler.level = level
+        await self._broadcast(
+            f"反射等级已切换：{LEVEL_LABELS[old]} → {LEVEL_LABELS[level]}"
+            f"（本能说明将随下一个任务生效）")
 
     def _spawn(self, coro) -> asyncio.Task:
         """后台任务（急停回话等）：登记防 GC，结束自动摘除。"""
@@ -334,26 +408,49 @@ class AgentLoop:
         """急停：当前任务在下一检查点终止；早于本次停止序号的排队任务将被丢弃。"""
         self._stop_seq += 1
         self._stop_requested = True
+        self._preempt_reason = None
+
+    def request_preempt(self, reason: str) -> None:
+        """M4 反射抢占：与急停同语义（检查点终止 + 排队任务丢弃），但 end_reason
+        记 ``preempt``、不播报"好的，停下了"（反射路径自己上报），也不复用急停的
+        STOP_WORDS 回话。"""
+        self._stop_seq += 1
+        self._stop_requested = True
+        self._preempt_reason = reason
+        logger.info("反射抢占请求（%s）：当前任务将在下一检查点终止", reason)
+
+    def inject_urgent(self, text: str) -> None:
+        """〔紧急〕消息排队（death/低血）：下一次 VLM 调用前 drain 进活动任务的
+        历史；任务已终止则留给下一个任务（开头即 drain）。线程安全：只操作
+        pending 列表，不碰活动 messages（vlm.chat 在工作线程里遍历它）。"""
+        self._urgent_pending.append(text)
+        logger.info("紧急消息排队（%d 条待注入）：%s", len(self._urgent_pending), text)
 
     # ------------------------------------------------------------------ 主入口
 
     async def run(self) -> None:
-        """常驻主入口：识别自身 → 订阅 chat → 串行消费任务队列（直到取消/stop）。"""
+        """常驻主入口：识别自身 → 订阅事件 → 串行消费任务队列 + 反射调度协程。"""
         self.install()
         if not self._identify_attempted:
             await self.identify_self()
+        # 订阅必须一次带全（bridge 侧单订阅槽，后一次 subscribe 会替换前一次）；
+        # 不带 min_level——CRITICAL 过滤会把 INFO 的 chat 滤掉，而 danger 四事件
+        # 本身就是 CRITICAL-only，类型即判据
         try:
-            await self.client.subscribe_events(["chat"])
+            await self.client.subscribe_events(
+                ["chat", *ReflexScheduler.DANGER_EVENTS])
         except Exception as exc:  # noqa: BLE001 —— 订阅失败要让调用方看见
-            logger.error("订阅 chat 事件失败：%s", exc)
+            logger.error("订阅事件失败（chat + danger）：%s", exc)
             raise
         logger.info("AgentLoop 就绪：自身 uuid=%s，工具表=%s，max_steps=%d，"
-                    "token 预算=%d，急停词=%s",
+                    "token 预算=%d，急停词=%s，反射等级=%s",
                     self.self_uuid or "未知（抑制窗兜底）",
                     ",".join(self.registry.names()),
                     self.config.loop.max_steps,
-                    self.config.loop.max_total_tokens, "/".join(STOP_WORDS))
+                    self.config.loop.max_total_tokens, "/".join(STOP_WORDS),
+                    self.scheduler.level.value)
         self._running = True
+        self._spawn(self.scheduler.run())  # M4：反射调度与任务消费并行
         try:
             while self._running:
                 instruction, seq = await self._queue.get()
@@ -361,6 +458,9 @@ class AgentLoop:
                     logger.info("任务 #%d 已被急停波及，丢弃：%r", seq, instruction)
                     continue
                 self._stop_requested = False  # 新任务不继承陈旧急停标志
+                self._preempt_reason = None
+                while self.scheduler.busy:  # 反射执行中不开新任务（先归位再做事）
+                    await asyncio.sleep(0.1)
                 try:
                     await self.run_task(instruction, seq=seq)
                 except Exception:  # noqa: BLE001 —— 单任务异常不杀常驻循环
@@ -372,10 +472,14 @@ class AgentLoop:
         """停止常驻循环并回收后台任务（不关闭 bridge 连接）。"""
         self._running = False
         self._stop_requested = True
+        self.scheduler.stop()
         for task in list(self._background):
             task.cancel()
         if self._background:
             await asyncio.gather(*self._background, return_exceptions=True)
+        for unregister in self._reflex_unregisters:
+            unregister()
+        self._reflex_unregisters = []
         if self._chat_unregister is not None:
             self._chat_unregister()
             self._chat_unregister = None
@@ -402,9 +506,10 @@ class AgentLoop:
     # ------------------------------------------------------------------ 单任务
 
     async def run_task(self, instruction: str, *, seq: int | None = None) -> TaskRun:
-        """执行一个任务到 finish/预算尽/急停（chat 队列与直接驱动共用此路径）。"""
+        """执行一个任务到 finish/预算尽/急停/被反射抢占（chat 队列与直接驱动共用此路径）。"""
         if seq is None:
             self._stop_requested = False  # 直接驱动视为全新任务
+            self._preempt_reason = None
         run = TaskRun(instruction=instruction)
         loop_cfg = self.config.loop
         started = time.perf_counter()
@@ -412,19 +517,23 @@ class AgentLoop:
         observation = await self._initial_observation()
         messages.append(user_message(
             f"初始观测：\n{observation}" if observation else "初始观测不可用，请先用工具观察。"))
+        self._drain_urgent(messages)  # 上一任务遗留的〔紧急〕先送达
         last_call_at: float | None = None
 
         try:
             for step in range(1, loop_cfg.max_steps + 1):
                 if self._stop_requested:
-                    run.end_reason = END_STOP
+                    self._end_for_stop(run)
                     break
                 # min_interval：连续 VLM 调用之间的最小间隔
                 if last_call_at is not None and loop_cfg.min_interval > 0:
                     await asyncio.sleep(max(0.0, loop_cfg.min_interval
                                             - (time.monotonic() - last_call_at)))
                 # M3.5 滚动状态免费搭车（Numen runtime_state 做法）：每步调用前替换式
-                # 注入 getStats 摘要——模型白拿最新自身状态，省掉专门的观察调用
+                # 注入 getStats 摘要——模型白拿最新自身状态，省掉专门的观察调用；
+                # M4 反射知会（〔本能反应〕behavior_log 尾部）与〔紧急〕消息同点注入
+                await self._inject_reflex_notices(messages)
+                self._drain_urgent(messages)
                 await self._inject_rolling_status(messages)
                 response = await asyncio.to_thread(
                     self.vlm.chat, messages, tools=self.registry.openai_tools())
@@ -451,7 +560,7 @@ class AgentLoop:
                 finished = False
                 for call in response.tool_calls:
                     if self._stop_requested:
-                        run.end_reason = END_STOP
+                        self._end_for_stop(run)
                         finished = True
                         break
                     outcome = await self._execute_tool(call, run)
@@ -496,10 +605,18 @@ class AgentLoop:
         await self._finalize(run)
         return run
 
+    def _end_for_stop(self, run: TaskRun) -> None:
+        """检查点上的终止定性：玩家急停（stop）还是反射抢占（preempt）。"""
+        if self._preempt_reason:
+            run.end_reason = END_PREEMPT
+            run.result = f"任务被反射 {self._preempt_reason} 抢占"
+        else:
+            run.end_reason = END_STOP
+
     async def _finalize(self, run: TaskRun) -> None:
         """任务结束播报（经 command()，自回显登记）。"""
-        if run.end_reason == END_STOP:
-            return  # 急停回话已由 chat handler 发出，不重复
+        if run.end_reason in (END_STOP, END_PREEMPT):
+            return  # 急停回话已由 chat handler 发出；抢占的上报由反射路径自己发
         if run.end_reason in (END_FINISH, END_CONTENT):
             if run.result.strip():
                 await self._broadcast(run.result)
@@ -522,6 +639,11 @@ class AgentLoop:
         """执行单个工具调用：一切失败都翻译成文本回填（模型可自救），不杀任务。"""
         started = time.perf_counter()
         ok = True
+        # M4：行走类原语执行期间置"有移动输入"（脱困反射的触发前提）——
+        # Baritone 在走 = 我们在打 W，卡住 2 秒就该挣扎了
+        moving = call.name in (WALK_TO_TOOL, COLLECT_BLOCK_TOOL)
+        if moving:
+            self.scheduler.note_movement(True)
         try:
             outcome = await self.registry.execute(
                 self.tools_client, call.name, call.arguments)
@@ -546,6 +668,9 @@ class AgentLoop:
             outcome = ToolOutcome(f"工具 {call.name} 执行异常："
                                   f"{type(exc).__name__}: {exc}")
             ok = False
+        finally:
+            if moving:
+                self.scheduler.note_movement(False)
         elapsed = time.perf_counter() - started
         run.tool_calls.append(ToolExec(name=call.name,
                                        arguments=dict(call.arguments),
@@ -605,9 +730,34 @@ class AgentLoop:
 - 只做与当前任务相关的事；不确定时先观察（screenshot/getGuiState/world.query）再行动
 - 玩家说"停下"或"stop"时任务会立即中止
 
+{instincts_section(self.scheduler.level)}
 ## 当前任务
 {instruction}
 """
+
+    async def _inject_reflex_notices(self, messages: list[dict[str, Any]]) -> None:
+        """反射事后知会（M4）：behavior_log 尾部替换式注入成一条〔本能反应〕消息。
+
+        纯简报不是记忆：无持久化、无检索，只保最近 REFLEX_NOTICE_TAIL_CHARS 字符；
+        历史里恒至多一条（固定前缀识别，与滚动状态同做法）。危险感知行（〔危险〕）
+        也在其中——L0 等级下动作关了、感知照进认知就是靠这条通道。
+        """
+        log = self.scheduler.behavior_log
+        if not log:
+            return
+        tail = "\n".join(log)[-REFLEX_NOTICE_TAIL_CHARS:]
+        messages[:] = [message for message in messages
+                       if not (message.get("role") == "user"
+                               and isinstance(message.get("content"), str)
+                               and message["content"].startswith(REFLEX_NOTICE_PREFIX))]
+        messages.append(user_message(
+            f"{REFLEX_NOTICE_PREFIX}（本能/危险简报，无需回复，供你了解刚才发生了什么）\n{tail}"))
+
+    def _drain_urgent(self, messages: list[dict[str, Any]]) -> None:
+        """把排队的〔紧急〕消息 drain 进当前任务历史（death/低血经此立即送达）。"""
+        while self._urgent_pending:
+            text = self._urgent_pending.pop(0)
+            messages.append(user_message(f"{URGENT_PREFIX}{text}"))
 
     async def _initial_observation(self) -> str:
         """任务开始的初始观测：getStats + getGuiState 紧凑摘要（失败不阻塞）。"""
@@ -737,14 +887,18 @@ __all__ = [
     "END_ERROR",
     "END_FINISH",
     "END_MAX_STEPS",
+    "END_PREEMPT",
     "END_STOP",
     "DEFAULT_ECHO_WINDOW",
     "MAX_TOOL_RESULT_CHARS",
     "NIL_UUID",
     "PARTIAL_DONE_PREFIX",
+    "REFLEX_NOTICE_PREFIX",
+    "REFLEX_NOTICE_TAIL_CHARS",
     "STATUS_PREFIX",
     "STOP_REPLY_TEXT",
     "STOP_WORDS",
+    "URGENT_PREFIX",
     "bridge_error_hint",
     "match_self_uuid",
 ]
