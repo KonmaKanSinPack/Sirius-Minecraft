@@ -108,6 +108,7 @@
 | 2026-08-19 | **NEKO 协议兼容层取消**：N.E.K.O 是独立项目（自有感知/思维链路），降为纯设计参考；任务帧保留在协议但不作兼容承诺 |
 | 2026-08-19 | **Bridge=哑管道**：只上报/接受信息，一切处理归 brain；API key 只配 local.md 一遍（排查确认 bridge 无 VLM 代码/无出站 HTTP，无需删码） |
 | 2026-08-19 | **反射层归 brain**（原 §8.3 规划在 bridge 轨）：Python 无 LLM 规则消费 M2-B 的 CRITICAL 危险事件；寻路同理 brain 侧 |
+| 2026-08-20 | **协议分拆**：sirius-bridge → LGPL-3.0（参考 Numen 实现+借用 Baritone，Numen 为 LGPL-3.0 按传染性要求同协议开源；LICENSE 落 sirius-bridge/）；sirius-brain 保持 Apache-2.0（根 LICENSE 不变） | 用户裁决（防纠纷） |
 | 2026-08-19 | **M3 方案定稿**：qwen3.7-plus 单模型；原生 tool-calling；结构化感知优先+按需截图；mock 双人先行、真机 LAN 收官 |
 | 2026-08-20 | **寻路 = Baritone 集成**（不自研 A*）：#goto/#stop 聊天命令驱动（客户端拦截，不达服务器），真机冒烟 3s 收敛 2.0 格；M4 寻路里程碑收窄为反射层 |
 | 2026-08-20 | **操作型功能入 bridge、对 brain 暴露接口**：dig/look 动作层先例（事件层长按被 vanilla 焦点双门控废掉，M2-D 同构）；bridge 边界由"哑管道"两层修订为"感知原语化 + 输入标准化 + 动作层操作原语"三层（sirius-technical §8.3） |
