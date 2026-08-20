@@ -40,6 +40,7 @@ _VLM_ENV_FIELDS = {
     "API_KEY": "api_key",
     "MODEL": "model",
     "ENABLE_THINKING": "enable_thinking",
+    "REASONING_EFFORT": "reasoning_effort",
     "PROXY": "proxy",
     "TEMPERATURE": "temperature",
     "MAX_TOKENS": "max_tokens",
@@ -89,7 +90,10 @@ class VLMConfig:
     """VLM 客户端配置（DashScope OpenAI 兼容模式 / qwen3.7-plus 配方）。
 
     - ``enable_thinking``：请求体**根级**参数（非 message 内），False 关闭思考——
-      local.md 实测配方
+      local.md 实测配方（DashScope qwen3 系；LM Studio 本地模型会静默忽略此参数）
+    - ``reasoning_effort``：OpenAI 风格根级参数（"none" 关思考）。本地 LM Studio
+      实测唯一有效的思考开关（enable_thinking/chat_template_kwargs//no_think 均无效，
+      见 local.md「本地 LLM」节）；None = 不下发
     - ``proxy``：None/空串 = 国内直连（调用窗口内清空代理环境变量 + NO_PROXY=*）；
       填了代理 URL 则走它
     - ``temperature`` / ``max_tokens``：None = 不下发（用服务端默认值）
@@ -100,6 +104,7 @@ class VLMConfig:
     api_key: str = ""
     model: str = "qwen3.7-plus"
     enable_thinking: bool = False
+    reasoning_effort: str | None = None
     proxy: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
