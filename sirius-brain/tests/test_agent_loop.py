@@ -334,7 +334,7 @@ class TestRunTask:
         """指令→getStats→finish→游戏内播报：finish 的 result 走 command（wire 可见）。"""
 
         async def main() -> None:
-            server = RecordingMock(two_player_scene())
+            server = RecordingMock(two_player_scene(), port=0)
             await server.start()
             client = BridgeClient(server.url)
             sent = spy_commands(client)
@@ -360,7 +360,7 @@ class TestRunTask:
 
     def test_max_steps_exhausted_broadcast(self):
         async def main() -> None:
-            server = RecordingMock(two_player_scene())
+            server = RecordingMock(two_player_scene(), port=0)
             await server.start()
             client = BridgeClient(server.url)
             sent = spy_commands(client)
@@ -381,7 +381,7 @@ class TestRunTask:
 
     def test_token_budget_exhausted(self):
         async def main() -> None:
-            server = RecordingMock(two_player_scene())
+            server = RecordingMock(two_player_scene(), port=0)
             await server.start()
             client = BridgeClient(server.url)
             sent = spy_commands(client)
@@ -404,7 +404,7 @@ class TestRunTask:
 
     def test_content_only_response_finishes(self):
         async def main() -> None:
-            server = RecordingMock(two_player_scene())
+            server = RecordingMock(two_player_scene(), port=0)
             await server.start()
             client = BridgeClient(server.url)
             sent = spy_commands(client)
@@ -424,7 +424,7 @@ class TestRunTask:
 
     def test_vlm_error_ends_task(self):
         async def main() -> None:
-            server = RecordingMock(two_player_scene())
+            server = RecordingMock(two_player_scene(), port=0)
             await server.start()
             client = BridgeClient(server.url)
             sent = spy_commands(client)
@@ -445,7 +445,7 @@ class TestRunTask:
 
     def test_screenshot_image_attached_and_pruned(self):
         async def main() -> None:
-            server = RecordingMock(two_player_scene())
+            server = RecordingMock(two_player_scene(), port=0)
             await server.start()
             client = BridgeClient(server.url)
             vlm = ScriptedVLM([
@@ -499,7 +499,7 @@ class TestTwoPlayerFlow:
         """双人全流程：Alex 指令 → 感知/决策/工具 → finish 播报；自回显不触发新任务。"""
 
         async def main() -> None:
-            server = RecordingMock(two_player_scene())
+            server = RecordingMock(two_player_scene(), port=0)
             await server.start()
             client = BridgeClient(server.url)
             sent = spy_commands(client)
@@ -558,7 +558,7 @@ class TestTwoPlayerFlow:
         """急停：任务执行中途玩家喊"停下" → 下一检查点断出 + 回话，任务不再继续。"""
 
         async def main() -> None:
-            server = RecordingMock(two_player_scene())
+            server = RecordingMock(two_player_scene(), port=0)
             await server.start()
             client = BridgeClient(server.url)
             sent = spy_commands(client)

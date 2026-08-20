@@ -252,11 +252,14 @@ class MockBridgeServer:
                 id=req.id, result=scripted.result, error=scripted.error,
             ))
         else:
-            # 能力清单内但未编排：回通用成功（echo 参数便于测试断言）
-            await self._send(conn, ToolCallResponse(
-                id=req.id,
-                result={"ok": True, "method": req.method, "echo": req.params},
-            ))
+            # 能力清单内但未编排：走 tool_result 钩子（默认回通用成功，echo 参数便于
+            # 测试断言）；子类覆写它即可叠加状态化世界（T4 FakeWorldBridge）
+            result = await self.tool_result(req.method, req.params)
+            await self._send(conn, ToolCallResponse(id=req.id, result=result))
+
+    async def tool_result(self, method: str, params: dict[str, Any]) -> Any:
+        """未编排方法的通用结果（子类可覆写做状态化模拟，回落 super() 保持原行为）。"""
+        return {"ok": True, "method": method, "echo": params}
 
     # ---- task 分支：NEKO 兼容帧，延迟回 task_finished ----
 

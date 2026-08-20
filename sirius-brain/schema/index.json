@@ -1,6 +1,6 @@
 {
-  "protocol_version": "1.0",
-  "exported_at": "2026-08-18T08:54:27Z",
+  "protocol_version": "1.1",
+  "exported_at": "2026-08-19T16:58:21Z",
   "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "generator": "sirius_brain.protocol.export_schema",
   "categories": {

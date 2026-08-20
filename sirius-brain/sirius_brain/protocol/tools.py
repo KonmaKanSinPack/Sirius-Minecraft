@@ -35,10 +35,15 @@ class GetGuiStateParams(BaseModel):
 
 
 class WorldQueryParams(BaseModel):
-    """world.query({ type: "blocks"|"entities", range })。spec §8.2。"""
+    """world.query({ type, range, filter? })。spec §8.2；filter 为 M3.5 v1.1 增强。
+
+    filter 条目为方块 registry 名（``spruce_log`` 自动补 ``minecraft:`` 前缀）
+    或 ``#tag``（``#minecraft:logs`` / 短写 ``#logs``）；缺省 = 不过滤（v1.0 行为）。
+    """
 
     type: WorldQueryType
     range: float = Field(gt=0)
+    filter: list[str] | None = None
 
 
 class GetStatsParams(BaseModel):
@@ -55,10 +60,14 @@ class MouseMoveParams(BaseModel):
 
 
 class ClickParams(BaseModel):
-    """input.click({ button, count })。spec §8.2。"""
+    """input.click({ button, count, hold_ms? })。spec §8.2；hold_ms 为 M3.5 v1.1 增强。
+
+    hold_ms（0..10000）有值时按下→等待→抬起（挖掘式长按）；缺省 = 25ms tap 不变。
+    """
 
     button: int
     count: int = Field(default=1, ge=1)
+    hold_ms: int | None = Field(default=None, ge=0, le=10000)
 
 
 class KeyParams(BaseModel):

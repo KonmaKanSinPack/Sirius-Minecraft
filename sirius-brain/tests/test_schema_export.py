@@ -117,7 +117,7 @@ class TestEachSchemaFile:
 
 def test_index_json(exported):
     index = json.loads((exported / "index.json").read_text(encoding="utf-8"))
-    assert index["protocol_version"] == PROTOCOL_VERSION == "1.0"
+    assert index["protocol_version"] == PROTOCOL_VERSION == "1.1"  # M3.5 v1.1：filter/hold_ms
     assert index["schema_dialect"] == SCHEMA_DIALECT
     from datetime import datetime
 

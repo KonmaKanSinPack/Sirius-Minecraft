@@ -29,6 +29,7 @@ from .loop import (
     ToolExec,
     match_self_uuid,
 )
+from .primitives import Primitives
 from .tools import (
     BRIDGE_WHITELIST,
     COMMAND_TOOL,
@@ -69,6 +70,7 @@ __all__ = [
     "LoopConfig",
     "NIL_UUID",
     "PARTIAL_DONE_PREFIX",
+    "Primitives",
     "QwenVLM",
     "SelfEchoFilter",
     "STOP_REPLY_TEXT",

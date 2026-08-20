@@ -11,7 +11,7 @@
       "type": "string"
     }
   },
-  "description": "world.query({ type: \"blocks\"|\"entities\", range })。spec §8.2。",
+  "description": "world.query({ type, range, filter? })。spec §8.2；filter 为 M3.5 v1.1 增强。\n\nfilter 条目为方块 registry 名（``spruce_log`` 自动补 ``minecraft:`` 前缀）\n或 ``#tag``（``#minecraft:logs`` / 短写 ``#logs``）；缺省 = 不过滤（v1.0 行为）。",
   "properties": {
     "type": {
       "$ref": "#/$defs/WorldQueryType"
@@ -20,6 +20,21 @@
       "exclusiveMinimum": 0,
       "title": "Range",
       "type": "number"
+    },
+    "filter": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Filter"
     }
   },
   "required": [
