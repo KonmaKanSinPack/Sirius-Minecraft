@@ -17,7 +17,8 @@
                   ToolError(-32602)（文案含"触及"，与真 bridge 一致）；已空
                   already_air；bedrock timeout 不移除；眼位→中心连线上有遮挡块时
                   连遮挡块一起移除并标 broken_via_occluder；**挖掉的方块原地生成
-                  掉落物实体**（T7，挖啥掉啥 count 1）
+                  掉落物实体**（T7，挖啥掉啥 count 1）；broken 结果附 drops——挖点
+                  4 格内新出现的 item 实体聚合（挖前快照 diff，M3.6 T3 对齐真 bridge）
 - command 路径  → BridgeClient.command 的 T→text→ENTER 三连：input.key 开聊天框、
                   input.text 暂存文本、input.key ENTER 提交；``#goto x [y] z`` 启动
                   假 Baritone 协程（每 0.5s 前进 4.3 m/s，到达即停），``#stop`` 停止
@@ -55,6 +56,9 @@ MIN_BREAK_HOLD_MS = 100
 DIG_SIM_ELAPSED_MS = 200
 #: fake dig 的视线采样步长（格）：眼位→中心连线找遮挡块
 DIG_OCCLUDER_STEP = 0.25
+#: fake dig 掉落观察半径（格）：与 Java 侧 DigContracts.DROPS_SCAN_RADIUS 同源——
+#: 破坏后扫挖点附近该半径内**新出现**的 item 实体聚合成 drops（M3.6 T3）
+DIG_DROP_SCAN_RADIUS = 4.0
 #: world.query 结果条数上限：与 Java 侧 BLOCKS_CAP 一致
 BLOCKS_CAP = 32
 #: world.query entities 结果条数上限：与 Java 侧 ENTITIES_CAP 一致（T7）
@@ -292,6 +296,10 @@ class FakeWorldBridge(MockBridgeServer):
         与真 bridge 的契约对齐：already_air 幂等成功；不可破坏 bedrock → timeout
         不移除；眼位→中心连线穿过的第一个实心块算遮挡（连同目标一起移除，标
         broken_via_occluder=true——真 bridge 是"先破遮挡再轮到目标"的监视按住）。
+        M3.6 T3：broken 结果附 ``drops:[{item,count}]``——挖点 DIG_DROP_SCAN_RADIUS
+        内**新出现**的 item 实体聚合（先快照再 diff，别人先掉的排除；真 bridge
+        破坏后等 20 tick 再扫，fake 世界同步无延迟直接扫）。already_air/timeout
+        不带 drops（与真 bridge 一致）。
         """
         self.digs.append(dict(params))
         x, y, z = int(params["x"]), int(params["y"]), int(params["z"])
@@ -315,6 +323,7 @@ class FakeWorldBridge(MockBridgeServer):
                     "elapsed_ms": timeout_ms}
         occluder = self._occluder_on_line(ex, ey, ez, center, target)
         self._aim_at(*center)  # bridge 的平滑瞄准终态
+        seen_before = self._drop_uuids_near(center)  # 挖前快照（diff 掉别人的）
         del self.blocks[target]
         self._spawn_drop(x, y, z, block_id)  # 挖啥掉啥（T7；遮挡树叶不掉落）
         if occluder is not None:
@@ -323,7 +332,32 @@ class FakeWorldBridge(MockBridgeServer):
                                   "elapsed_ms": DIG_SIM_ELAPSED_MS * (2 if occluder else 1)}
         if occluder is not None:
             result["broken_via_occluder"] = True
+        result["drops"] = self._drops_since(center, seen_before)
         return result
+
+    def _drop_uuids_near(self, center: tuple[float, float, float],
+                         radius: float = DIG_DROP_SCAN_RADIUS) -> set[str]:
+        """挖点 radius 格内现存掉落物的 uuid 集（挖前快照，diff 基线）。"""
+        seen = set()
+        for uuid, drop in self.item_drops.items():
+            pos = drop["position"]
+            if math.dist((pos["x"], pos["y"], pos["z"]), center) <= radius:
+                seen.add(uuid)
+        return seen
+
+    def _drops_since(self, center: tuple[float, float, float],
+                     seen_before: set[str],
+                     radius: float = DIG_DROP_SCAN_RADIUS) -> list[dict[str, Any]]:
+        """快照之后新出现在挖点 radius 格内的掉落物，按注册名聚合成 [{item,count}]。"""
+        aggregated: dict[str, int] = {}
+        for uuid, drop in self.item_drops.items():
+            if uuid in seen_before:
+                continue  # 挖之前就躺着的（别人的）：不算本次挖掘的掉落
+            pos = drop["position"]
+            if math.dist((pos["x"], pos["y"], pos["z"]), center) > radius:
+                continue
+            aggregated[str(drop["item"])] = aggregated.get(str(drop["item"]), 0) + int(drop.get("count", 1))
+        return [{"item": item, "count": count} for item, count in aggregated.items()]
 
     def _occluder_on_line(self, ex: float, ey: float, ez: float,
                           center: tuple[float, float, float],
@@ -468,6 +502,7 @@ __all__ = [
     "BLOCKS_CAP",
     "BLOCK_TAGS",
     "DIG_OCCLUDER_STEP",
+    "DIG_DROP_SCAN_RADIUS",
     "DIG_SIM_ELAPSED_MS",
     "ENTITIES_CAP",
     "EYE_HEIGHT",

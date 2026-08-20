@@ -41,6 +41,7 @@ from sirius_brain.protocol import (
     Capability,
     EventLevel,
     EventsSubscribeParams,
+    HelloAckFrame,
     NotificationFrame,
     TaskFinishedFrame,
     TaskFrame,
@@ -94,8 +95,9 @@ class HelloFrame(BaseModel):
     """连接后首条消息的 token 握手帧。spec §8.2 安全模型。
 
     真 Mod（M1-B/C）要求此帧；mock 不校验也不要求（会回一条 -32600 的未知帧错误，
-    客户端按 best-effort 忽略）。protocol/ 未定义 hello（它不是工具调用协议的一部分），
-    故在此定义——不与既有协议模型重复。
+    客户端按 best-effort 忽略）。protocol/ 只建模了回应帧 HelloAckFrame（M3.6 起被
+    接收循环识别）；请求帧 hello 不是工具调用协议的一部分，仍定义在此不进
+    protocol/（schema 导出不覆盖握手帧，避免与 HelloFrame 单侧重复）。
     """
 
     type: Literal["hello"] = "hello"
@@ -485,6 +487,12 @@ class BridgeClient:
                     "ignored",
                     f"身体回错误帧（code={err.get('code')}, "
                     f"message={err.get('message')!r}）——按不支持 hello 处理")
+            elif isinstance(ack, dict) and ack.get("type") == "hello_ack":
+                # 真机 Mod 的正式回应（M1 起就回，M3.6 起识别）
+                self.hello_result = HelloResult(
+                    "acked",
+                    f"hello_ack ok={ack.get('ok')} "
+                    f"protocol_version={ack.get('protocol_version')!r}")
             else:
                 ack_type = ack.get("type") if isinstance(ack, dict) else type(ack).__name__
                 self.hello_result = HelloResult("acked", f"收到回应 type={ack_type!r}")
@@ -528,6 +536,8 @@ class BridgeClient:
             await self._handle_notification(msg)
         elif frame_type == "task_finished":
             await self._handle_task_finished(msg)
+        elif frame_type == "hello_ack":
+            await self._handle_hello_ack(msg)
         else:
             # 前向兼容：身体新增帧类型时旧客户端不崩。spec §8.2。
             logger.info("忽略无法识别的帧 type=%r（前向兼容）", frame_type)
@@ -585,6 +595,21 @@ class BridgeClient:
                     await outcome
             except Exception:  # noqa: BLE001
                 logger.exception("task_finished handler 抛错（task_id=%s）", frame.task_id)
+
+    async def _handle_hello_ack(self, msg: dict[str, Any]) -> None:
+        """hello_ack 握手回应识别（M3.6 T2）。
+
+        真机 Mod 连接后的首条入站帧——此前落入"无法识别的帧"分支记 INFO 日志；
+        现在用 HelloAckFrame 校验并 debug 记录（ack 语义早已被 _wait_hello_ack 的
+        观察 future 消费，这里只补认知缺口）。畸形帧按前向兼容忽略，绝不影响连接。
+        """
+        try:
+            frame = HelloAckFrame.model_validate(msg)
+        except ValidationError as exc:
+            logger.warning("hello_ack 帧校验失败，忽略：%s", exc)
+            return
+        logger.debug("hello_ack：ok=%s protocol_version=%s",
+                     frame.ok, frame.protocol_version)
 
     def _poke_hello(self, payload: Any) -> None:
         """hello 等待者观察第一帧（不消费帧，正常分发照旧）。"""

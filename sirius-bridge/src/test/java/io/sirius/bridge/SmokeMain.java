@@ -1394,6 +1394,43 @@ public final class SmokeMain {
                         && blocked.get("reason").getAsString().contains("water"),
                 "dig results: blocked_* carries the reason");
 
+        // --- M3.6 empirical drops: aggregate new in-radius item entities
+        List<ToolContracts.EntityFact> facts = Arrays.asList(
+                new ToolContracts.EntityFact("d1", "Oak Log", "minecraft:item",
+                        6.5, 64.5, 0.5, Float.NaN, "minecraft:oak_log", 1),
+                new ToolContracts.EntityFact("d2", "Oak Log", "minecraft:item",
+                        7.5, 64.5, 0.5, Float.NaN, "minecraft:oak_log", 2),
+                new ToolContracts.EntityFact("foreign", "Oak Log", "minecraft:item",
+                        6.5, 64.5, 1.5, Float.NaN, "minecraft:oak_log", 1),
+                new ToolContracts.EntityFact("far", "Oak Log", "minecraft:item",
+                        20.0, 64.0, 0.0, Float.NaN, "minecraft:oak_log", 1),
+                new ToolContracts.EntityFact("z1", "Zombie", "minecraft:zombie",
+                        6.0, 64.0, 0.0, 20.0F));
+        java.util.Set<String> seenBefore = java.util.Set.of("foreign");
+        List<JsonObject> drops = DigContracts.aggregateDrops(facts, seenBefore, 6.5, 64.5, 0.5,
+                DigContracts.DROPS_SCAN_RADIUS);
+        check(drops.size() == 1
+                        && "minecraft:oak_log".equals(drops.get(0).get("item").getAsString())
+                        && drops.get(0).get("count").getAsInt() == 3,
+                "dig drops: new in-radius item entities summed per id (pre-existing/far/non-item excluded)");
+        check(DigContracts.aggregateDrops(facts,
+                        java.util.Set.of("d1", "d2", "foreign", "far"), 6.5, 64.5, 0.5, 4.0).isEmpty(),
+                "dig drops: fully-snapshotted scene -> empty report (nothing new appeared)");
+        JsonObject withDrops = DigContracts.digResult(DigContracts.RESULT_BROKEN, "minecraft:oak_log",
+                3210L, null, null, drops);
+        check(withDrops.get("drops").isJsonArray()
+                        && withDrops.get("drops").getAsJsonArray().size() == 1
+                        && withDrops.get("drops").getAsJsonArray().get(0).getAsJsonObject()
+                        .get("count").getAsInt() == 3,
+                "dig results: broken carries the drops [{item,count}] array");
+        check(!DigContracts.digResult(DigContracts.RESULT_ALREADY_AIR, null, 4L, null, null).has("drops")
+                        && !DigContracts.digResult(DigContracts.RESULT_BROKEN, "minecraft:oak_log",
+                        100L, null, null, (List<JsonObject>) null).has("drops"),
+                "dig results: null drops omitted (old-jar response shape intact)");
+        check(DigContracts.DROPS_WAIT_TICKS >= 10 && DigContracts.DROPS_WAIT_TICKS <= 20
+                        && DigContracts.DROPS_SCAN_RADIUS == 4.0,
+                "dig drops: wait window bounded to <= 1 s, scan radius 4 (RPC latency budget)");
+
         // --- monitor: aim -> press -> break (the happy path)
         DigContracts.DigMonitor m = new DigContracts.DigMonitor(15000, false);
         DigContracts.TickView aiming = new DigContracts.TickView(false, false, false, false, 0);

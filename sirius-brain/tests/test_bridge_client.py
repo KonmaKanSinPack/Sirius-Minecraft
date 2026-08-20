@@ -359,6 +359,24 @@ class TestHello:
 
         asyncio.run(scenario())
 
+    def test_hello_ack_recognized_not_unknown(self, caplog):
+        """M3.6 T2：真机 hello_ack（连接后首条入站帧）被识别——不再落进
+        "忽略无法识别的帧"分支；hello 握手记 acked 且 detail 带 ok/版本。"""
+
+        async def scenario():
+            async with _RawPushServer([
+                json.dumps({"type": "hello_ack", "ok": True, "protocol_version": "1.2"}),
+            ]) as server:
+                async with BridgeClient(server.url, token="t0") as client:
+                    hello = await client.wait_hello(timeout=3.0)
+            assert hello is not None and hello.status == "acked"
+            assert "hello_ack" in hello.detail and "1.2" in hello.detail
+
+        with caplog.at_level(logging.DEBUG, logger="sirius_brain.bridge.client"):
+            asyncio.run(scenario())
+        assert any("hello_ack" in record.getMessage() for record in caplog.records)
+        assert not any("无法识别" in record.getMessage() for record in caplog.records)
+
 
 class TestTaskFrames:
     def test_task_finished_callback_with_special_task_id(self):
